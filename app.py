@@ -1,19 +1,23 @@
 from flask import Flask, request, render_template_string, send_file, jsonify, redirect, session
 from threading import Lock
 from werkzeug.security import generate_password_hash, check_password_hash
+import pandas as pd
 import io
 from datetime import datetime
 import secrets
 import os
 
 app = Flask(__name__)
+@app.route("/")
+def index():
+    return "Приложение успешно запущено!"
+
 app.secret_key = os.environ.get('SECRET_KEY', secrets.token_hex(32))
 
 # Данные хранилища
 inventory = {}
 history = {}
-users = {"admin": {"password": generate_password_hash("superSecurePassword2025!"), "role": "admin"}}
-
+users = {"admin": {"password": generate_password_hash("admin123"), "role": "admin"}}
 pending_finish = {}
 inventory_lock = Lock()
 users_lock = Lock()
@@ -758,6 +762,11 @@ def finish_confirm():
                         })
             inventory.clear()
             history.clear()
+        
+        df = pd.DataFrame(rows) if rows else pd.DataFrame([{"Локация":"","Категория":"","Товар":"Нет","Код":"","Единица":"","Количество":0}])
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
+            df.to_excel(writer, index=False, sheet_name="Инвентаризация")
         output.seek(0)
         del pending_finish[request_id]
         return send_file(output, as_attachment=True, download_name="Инвентаризация.xlsx",
@@ -956,4 +965,3 @@ if __name__ == "__main__":
     port = int(os.environ.get('PORT', 7000))
     debug = os.environ.get('FLASK_ENV') != 'production'
     app.run(host="0.0.0.0", port=port, debug=debug)
-# redeploy test
