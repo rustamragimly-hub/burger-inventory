@@ -1,7 +1,6 @@
 from flask import Flask, request, render_template_string, send_file, jsonify, redirect, session
 from threading import Lock
 from werkzeug.security import generate_password_hash, check_password_hash
-import pandas as pd
 import io
 from datetime import datetime
 import secrets
@@ -763,9 +762,6 @@ def finish_confirm():
             inventory.clear()
             history.clear()
         
-        df = pd.DataFrame(rows) if rows else pd.DataFrame([{"Локация":"","Категория":"","Товар":"Нет","Код":"","Единица":"","Количество":0}])
-        output = io.BytesIO()
-        with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
             df.to_excel(writer, index=False, sheet_name="Инвентаризация")
         output.seek(0)
         del pending_finish[request_id]
