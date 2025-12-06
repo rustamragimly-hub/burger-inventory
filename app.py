@@ -1,5 +1,6 @@
 from flask import Flask, request, render_template_string, send_file, jsonify, redirect, session
 from threading import Lock
+from openpyxl import Workbook
 from werkzeug.security import generate_password_hash, check_password_hash
 import io
 from datetime import datetime
@@ -742,34 +743,53 @@ def edit_products():
             del LOCATIONS[location][category][name]
     return redirect('/admin')
 
-@app.route('/admin/finish_confirm', methods=['POST'])
+@app.route("/admin/finish-confirm", methods=["POST"])
 @require_admin
-def finish_confirm():
-    request_id = request.form['request_id']
-    if request_id in pending_finish:
-        rows = []
+def finishconfirm():
+    requestid = request.form.get("requestid")
+    if requestid in pending_finish:
+        # создаём новую книгу Excel
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Revision"
+
+        # шапка таблицы
+        ws.append(["Локация", "Категория", "Товар", "Штрих‑код", "Ед.", "Количество"])
+
+        # данные из инвентаря
         with inventory_lock:
             for location in LOCATIONS:
                 for cat, products in LOCATIONS[location].items():
                     for name, info in products.items():
                         qty = inventory.get((location, name), 0)
-                        rows.append({
-                            "Локация": location,
-                            "Категория": cat,
-                            "Товар": name,
-                            "Код": info['code'],
-                            "Единица": info['unit'],
-                            "Количество": qty
-                        })
-            inventory.clear()
-            history.clear()
-        
-            df.to_excel(writer, index=False, sheet_name="Инвентаризация")
+                        ws.append([
+                            location,
+                            cat,
+                            name,
+                            info.get("code", ""),
+                            info.get("unit", ""),
+                            qty,
+                        ])
+
+        # сохраняем в память
+        output = io.BytesIO()
+        wb.save(output)
         output.seek(0)
-        del pending_finish[request_id]
-        return send_file(output, as_attachment=True, download_name="Инвентаризация.xlsx",
-                         mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-    return redirect('/admin')
+
+        # очищаем состояние ревизии
+        inventory.clear()
+        history.clear()
+        del pending_finish[requestid]
+
+        # отправляем файл пользователю
+        return send_file(
+            output,
+            as_attachment=True,
+            download_name=f"revision_{requestid}.xlsx",
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
+    return redirect("/admin")
 
 @app.route('/admin/finish_cancel', methods=['POST'])
 @require_admin
