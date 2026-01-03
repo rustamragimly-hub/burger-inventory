@@ -743,10 +743,10 @@ def edit_products():
             del LOCATIONS[location][category][name]
     return redirect('/admin')
 
-@app.route("/admin/finish-confirm", methods=["POST"])
+@app.route("/admin/finish_confirm", methods=["POST"])
 @require_admin
 def finishconfirm():
-    requestid = request.form.get("requestid")
+    requestid = request.form.get("request_id")
     if requestid in pending_finish:
         # создаём новую книгу Excel
         wb = Workbook()
