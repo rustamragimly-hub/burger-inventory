@@ -748,10 +748,19 @@ def edit_products():
 def finishconfirm():
     requestid = request.form.get("request_id")
     if requestid in pending_finish:
+        data = pending_finish[requestid]
+        operator_name = data.get('user', 'Unknown')
+        timestamp = data.get('timestamp', '')
+
         # создаём новую книгу Excel
         wb = Workbook()
         ws = wb.active
         ws.title = "Revision"
+
+        # Добавляем информацию о ревизии
+        ws.append(["Ревизия от:", timestamp])
+        ws.append(["Оператор:", operator_name])
+        ws.append([]) # Пустая строка
 
         # шапка таблицы
         ws.append(["Локация", "Категория", "Товар", "Штрих‑код", "Ед.", "Количество"])
@@ -782,10 +791,11 @@ def finishconfirm():
         del pending_finish[requestid]
 
         # отправляем файл пользователю
+        filename = f"revision_{timestamp.replace(':', '-')}_{operator_name}.xlsx"
         return send_file(
             output,
             as_attachment=True,
-            download_name=f"revision_{requestid}.xlsx",
+            download_name=filename,
             mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
