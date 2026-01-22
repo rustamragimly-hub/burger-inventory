@@ -1351,6 +1351,34 @@ header h1 {
 }
 .history-item { border-bottom: 1px solid #e2e8f0; padding: 4px 0; }
 .history-item:last-child { border-bottom: none; }
+/* Added Values List */
+.values-list {
+    margin: 10px 0;
+    max-height: 100px;
+    overflow-y: auto;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    background: #f8fafc;
+    display: none;
+}
+.value-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 12px;
+    border-bottom: 1px solid #e2e8f0;
+    font-size: 14px;
+}
+.value-item:last-child { border-bottom: none; }
+.del-val-btn {
+    color: var(--danger);
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: 18px;
+    padding: 0 8px;
+    line-height: 1;
+}
 
 .finish-btn {
     position: fixed;
@@ -1446,6 +1474,7 @@ header h1 {
         <button class="c-btn op-btn" onclick="addToTotal()">+</button>
         <button class="c-btn submit-btn" onclick="saveResult()">СОХРАНИТЬ</button>
     </div>
+    <div id="addedValuesList" class="values-list"></div>
     <div class="total-row">Итого: <span id="total" class="highlight">0</span> <span id="unit"></span></div>
     <div id="calcHistory" class="history-log"></div>
 </div>
@@ -1463,6 +1492,7 @@ header h1 {
 <script>
 let loc='', prod='', unit='';
 let val='0', op=null, prev=null, total=0;
+let addedValues = [];
 
 function filterProducts(){
   const filter=document.getElementById('search').value.toLowerCase();
@@ -1479,6 +1509,8 @@ function filterProducts(){
 
 function openCalc(l,p,u, el){
   loc=l;prod=p;unit=u;total=0;val='0';op=null;prev=null;
+  addedValues = [];
+  renderValuesList();
   document.getElementById('calcTitle').innerText=p;
   document.getElementById('unit').innerText=u;
   document.getElementById('calcDisplay').value='0';
@@ -1506,10 +1538,58 @@ function calculate(){if(op&&prev!=null){const cur=parseFloat(val);let r;
   switch(op){case '+':r=prev+cur;break;case '-':r=prev-cur;break;case '*':r=prev*cur;break;case '/':r=cur!==0?prev/cur:'Error';break;}
   val=r.toString();op=null;prev=null;document.getElementById('calcDisplay').value=val;}}
 function clr(){val='0';prev=null;op=null;document.getElementById('calcDisplay').value='0';}
-function addToTotal(){calculate();let n=parseFloat(val);if(!isNaN(n))total+=n;document.getElementById('total').innerText=total;val='0';document.getElementById('calcDisplay').value='0';}
+
+function addToTotal(){
+    calculate();
+    let n=parseFloat(val);
+    if(!isNaN(n) && n !== 0){
+        addedValues.push(n);
+        renderValuesList();
+    }
+    val='0';
+    document.getElementById('calcDisplay').value='0';
+}
+
+function renderValuesList() {
+    const list = document.getElementById('addedValuesList');
+    if (addedValues.length === 0) {
+        list.style.display = 'none';
+        list.innerHTML = '';
+        total = 0;
+    } else {
+        list.style.display = 'block';
+        list.innerHTML = addedValues.map((v, i) => `
+            <div class="value-item">
+                <span>${v}</span>
+                <button class="del-val-btn" onclick="removeValue(${i})">×</button>
+            </div>
+        `).join('');
+        total = addedValues.reduce((a, b) => a + b, 0);
+    }
+    // Round total to avoid float errors
+    total = Math.round(total * 1000) / 1000;
+    document.getElementById('total').innerText = total;
+}
+
+function removeValue(i) {
+    addedValues.splice(i, 1);
+    renderValuesList();
+}
 
 async function saveResult(){
-  let n=total>0?total:parseFloat(val);
+  // If user has put things in the list, use that total.
+  // We ignore 'val' if addedValues has items to prevent double adding if they forgot to click '+' on the last one, 
+  // OR we could try to be smart. Standard calc behavior: clear implicit buffer?
+  // Let's assume if addedValues > 0, the specific intention was to sum those values.
+  
+  let n = 0;
+  if (addedValues.length > 0) {
+      n = total;
+  } else {
+      n = parseFloat(val);
+      if (isNaN(n)) n = 0;
+  }
+  
   if(isNaN(n)||n<=0){alert('Пожалуйста, введите корректное число');return;}
   const fd=new FormData();fd.append('location',loc);fd.append('name',prod);fd.append('count',n);
   await fetch('/add_api',{method:'POST',body:fd});
