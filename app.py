@@ -1140,8 +1140,9 @@ def revision():
     selected_location = request.args.get("location", "Склад")
     with inventory_lock:
         inv = dict(inventory)
+        hist = dict(history)
     
-    return render_template_string(revision_html, locations=LOCATIONS, inventory=inv, current=selected_location, role=session.get('role', 'operator'))
+    return render_template_string(revision_html, locations=LOCATIONS, inventory=inv, history=hist, current=selected_location, role=session.get('role', 'operator'))
 
 revision_html = '''<!DOCTYPE html>
 <html lang="ru">
@@ -1338,6 +1339,18 @@ header h1 {
     color: var(--text-muted);
 }
 .highlight { color: var(--primary); font-weight: 700; }
+.history-log {
+    margin-top: 20px;
+    background: #f8fafc;
+    padding: 10px;
+    border-radius: 8px;
+    font-size: 11px;
+    color: var(--text-muted);
+    max-height: 100px;
+    overflow-y: auto;
+}
+.history-item { border-bottom: 1px solid #e2e8f0; padding: 4px 0; }
+.history-item:last-child { border-bottom: none; }
 
 .finish-btn {
     position: fixed;
@@ -1384,7 +1397,8 @@ header h1 {
       <h3>{{cat}}</h3>
       {% for name, data in products.items() %}
       {% set qty = inventory.get((current, name), 0) %}
-      <div class="product-item" data-name="{{name | lower}}" onclick="openCalc('{{current}}','{{name}}','{{data.unit}}')">
+      {% set hist_list = history.get((current, name), []) %}
+      <div class="product-item" data-name="{{name | lower}}" data-history='{{ hist_list | tojson }}' onclick="openCalc('{{current}}','{{name}}','{{data.unit}}', this)">
         <div>
             <div class="p-name">{{name}}</div>
             <div class="p-meta">{{data.unit}}</div>
@@ -1433,6 +1447,7 @@ header h1 {
         <button class="c-btn submit-btn" onclick="saveResult()">СОХРАНИТЬ</button>
     </div>
     <div class="total-row">Итого: <span id="total" class="highlight">0</span> <span id="unit"></span></div>
+    <div id="calcHistory" class="history-log"></div>
 </div>
 </div>
 
@@ -1462,12 +1477,24 @@ function filterProducts(){
   });
 }
 
-function openCalc(l,p,u){
+function openCalc(l,p,u, el){
   loc=l;prod=p;unit=u;total=0;val='0';op=null;prev=null;
   document.getElementById('calcTitle').innerText=p;
   document.getElementById('unit').innerText=u;
   document.getElementById('calcDisplay').value='0';
   document.getElementById('total').innerText='0';
+  
+  // History
+  const history = JSON.parse(el.getAttribute('data-history') || '[]');
+  const historyContainer = document.getElementById('calcHistory');
+  if(history.length > 0) {
+      historyContainer.innerHTML = history.map(h => `<div class="history-item">${h}</div>`).reverse().join('');
+      historyContainer.style.display = 'block';
+  } else {
+      historyContainer.innerHTML = 'История пуста';
+      historyContainer.style.display = 'block';
+  }
+
   document.getElementById('calcModal').classList.add('active');
 }
 
