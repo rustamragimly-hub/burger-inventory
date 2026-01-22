@@ -6,6 +6,7 @@ import io
 from datetime import datetime
 import secrets
 import os
+import uuid
 
 app = Flask(__name__)
 
@@ -1471,12 +1472,15 @@ header h1 {
         <button class="c-btn op-btn" onclick="setOp('+')">+</button>
         
         <button class="c-btn op-btn" onclick="calculate()">=</button>
-        <button class="c-btn op-btn" onclick="addToTotal()">+</button>
+        <button class="c-btn op-btn" style="font-size:16px" onclick="addToTotal()">Внести</button>
         <button class="c-btn submit-btn" onclick="saveResult()">СОХРАНИТЬ</button>
     </div>
     <div id="addedValuesList" class="values-list"></div>
     <div class="total-row">Итого: <span id="total" class="highlight">0</span> <span id="unit"></span></div>
-    <div id="calcHistory" class="history-log"></div>
+    <div style="margin-top:15px;border-top:1px solid #eee;padding-top:10px;">
+        <div style="font-size:12px;color:#999;margin-bottom:5px;">История операций (текущая сессия):</div>
+        <div id="calcHistory" class="history-log"></div>
+    </div>
 </div>
 </div>
 
@@ -1518,16 +1522,55 @@ function openCalc(l,p,u, el){
   
   // History
   const history = JSON.parse(el.getAttribute('data-history') || '[]');
-  const historyContainer = document.getElementById('calcHistory');
-  if(history.length > 0) {
-      historyContainer.innerHTML = history.map(h => `<div class="history-item">${h}</div>`).reverse().join('');
-      historyContainer.style.display = 'block';
-  } else {
-      historyContainer.innerHTML = 'История пуста';
-      historyContainer.style.display = 'block';
-  }
-
+  renderHistory(history);
   document.getElementById('calcModal').classList.add('active');
+}
+
+function renderHistory(history) {
+    const historyContainer = document.getElementById('calcHistory');
+    if(history.length > 0) {
+        historyContainer.innerHTML = history.map(h => {
+             // Handle both old string format and new dict format
+             let text = '';
+             let id = null;
+             if (typeof h === 'string') {
+                 text = h;
+             } else {
+                 text = h.text;
+                 id = h.id;
+             }
+             
+             let delBtn = '';
+             if (id) {
+                 delBtn = `<button class="del-val-btn" onclick="deleteHistoryItem('${id}', '${loc}', '${prod}')" title="Удалить запись">×</button>`;
+             }
+             
+             return `<div class="history-item" style="display:flex;justify-content:space-between;">
+                <span>${text}</span>
+                ${delBtn}
+             </div>`;
+        }).reverse().join('');
+        historyContainer.style.display = 'block';
+    } else {
+        historyContainer.innerHTML = 'История пуста';
+        historyContainer.style.display = 'block';
+    }
+}
+
+async function deleteHistoryItem(id, location, name) {
+    if(!confirm('Удалить эту запись из истории? Это изменит текущий остаток.')) return;
+    
+    const fd = new FormData();
+    fd.append('id', id);
+    fd.append('location', location);
+    fd.append('name', name);
+    
+    const res = await fetch('/delete_history_api', {method:'POST', body:fd});
+    if (res.ok) {
+        window.location.reload();
+    } else {
+        alert('Ошибка при удалении');
+    }
 }
 
 function closeCalc(){document.getElementById('calcModal').classList.remove('active');}
@@ -1617,10 +1660,44 @@ def add_api():
     count = float(request.form['count'])
     timestamp = datetime.now().strftime("%d.%m %H:%M:%S")
     key = (location, name)
+    key = (location, name)
+    msg = f"{timestamp}: {session['username']} добавил {count}"
+    item = {
+        'id': str(uuid.uuid4()),
+        'text': msg,
+        'count': count,
+        'user': session['username'],
+        'timestamp': timestamp
+    }
     with inventory_lock:
         inventory[key] = inventory.get(key, 0) + count
-        history.setdefault(key, []).append(f"{timestamp}: {session['username']} добавил {count}")
+        history.setdefault(key, []).append(item)
     return ('', 204)
+
+@app.route('/delete_history_api', methods=['POST'])
+@require_login
+def delete_history_api():
+    hist_id = request.form['id']
+    location = request.form['location']
+    name = request.form['name']
+    key = (location, name)
+    
+    with inventory_lock:
+        if key in history:
+            # Find item
+            items = history[key]
+            for i, item in enumerate(items):
+                # Check if item is dict (new format) and matches ID
+                if isinstance(item, dict) and item.get('id') == hist_id:
+                    # Revert inventory count
+                    count_to_remove = item.get('count', 0)
+                    inventory[key] = inventory.get(key, 0) - count_to_remove
+                    
+                    # Remove from history
+                    items.pop(i)
+                    return ('', 204)
+                    
+    return ('Item not found', 404)
 
 @app.route('/request_finish', methods=['POST'])
 @require_login
