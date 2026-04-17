@@ -14,16 +14,105 @@ app = Flask(__name__)
 def index():
     return redirect("/login")
 
+@app.route('/sw.js')
+def sw():
+    return app.send_static_file('sw.js')
 
-app.secret_key = os.environ.get('SECRET_KEY', secrets.token_hex(32))
+@app.route('/manifest.json')
+def manifest():
+    return app.send_static_file('manifest.json')
+
+
+# --- Безопасность и Конфигурация ---
+secret_file = os.path.join(os.path.dirname(__file__), '.secret_key')
+if os.path.exists(secret_file):
+    with open(secret_file, 'r') as f:
+        app.secret_key = f.read().strip()
+else:
+    app.secret_key = os.environ.get('SECRET_KEY', secrets.token_hex(32))
+    with open(secret_file, 'w') as f:
+        f.write(app.secret_key)
+
+app.config.update(
+    SESSION_COOKIE_SECURE=True,
+    SESSION_COOKIE_SAMESITE='Lax',
+    SESSION_COOKIE_HTTPONLY=True
+)
+
+# Генерация CSRF
+def generate_csrf_token():
+    if 'csrf_token' not in session:
+        session['csrf_token'] = secrets.token_hex(16)
+    return session['csrf_token']
+
+app.jinja_env.globals['csrf_token'] = generate_csrf_token
+
+@app.before_request
+def csrf_protect():
+    if request.method == "POST":
+        # Skip CSRF for some routes if necessary (e.g. webhooks), but here we want it everywhere
+        token = session.get('csrf_token', None)
+        # Check both form data and a custom header for AJAX/JSON requests
+        sent_token = request.form.get('csrf_token') or request.headers.get('X-CSRF-Token')
+        if not token or token != sent_token:
+            return "CSRF Error: Неверный токен", 403
+
+@app.after_request
+def add_security_headers(response):
+    response.headers['X-Frame-Options'] = 'SAMEORIGIN'
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
+    return response
 
 # Данные хранилища
 inventory = {}
 history = {}
-users = {"admin": {"password": generate_password_hash("admin123"), "role": "admin"}}
+admin_pass = os.environ.get('ADMIN_PASSWORD', 'SuperAdmin!2026')
+users = {"admin": {"password": generate_password_hash(admin_pass), "role": "admin"}}
 pending_finish = {}
+
+# Защита от брутфорса
+login_attempts = {}
+MAX_ATTEMPTS = 5
+LOCKOUT_TIME = 300 # 5 минут
+
 inventory_lock = Lock()
 users_lock = Lock()
+
+# ============== PUSH-УВЕДОМЛЕНИЯ (Web Push + VAPID) ==============
+VAPID_PRIVATE_KEY = """
+-----BEGIN EC PRIVATE KEY-----
+MHcCAQEEIFnsPC4nmBJ1Cz1DwiBw+Oxw6ZCB2dUzwGCnRjcmkWEaoAoGCCqGSM49
+AwEHoUQDQgAEaw/dxmVseO6eK2OszEWRWG0xuzQJ//WfQ6I0TeMkNUEmpmIxA7EU
+borDgJpEkcgUuXqekcCwCo/2n5uJ+ImUkg==
+-----END EC PRIVATE KEY-----"""
+VAPID_PUBLIC_KEY = "BGsP3cZlbHjunitjrMxFkVhtMbs0Cf_1n0OiNE3jJDVBJqZiMQOxFG6Kw4CaRJHIFLl6npHAsAqP9p-bifiJlJI"
+VAPID_CLAIMS = {"sub": "mailto:admin@revision-app.app"}
+
+# Хранилище push-подписок (админов)
+push_subscriptions = []
+
+def send_push_notification(title, body):
+    """Send push notification to all stored admin subscriptions."""
+    from pywebpush import webpush, WebPushException
+    import json
+    dead = []
+    for sub in push_subscriptions:
+        try:
+            webpush(
+                subscription_info=sub,
+                data=json.dumps({"title": title, "body": body}),
+                vapid_private_key=VAPID_PRIVATE_KEY,
+                vapid_claims=VAPID_CLAIMS
+            )
+        except WebPushException as e:
+            if '410' in str(e) or '404' in str(e):
+                dead.append(sub)
+            else:
+                print(f"Push error: {e}")
+    for d in dead:
+        if d in push_subscriptions:
+            push_subscriptions.remove(d)
 
 # ПОЛНЫЙ СЛОВАРЬ ТОВАРОВ (динамически из шаблона template.xlsx)
 GLOBAL_PRODUCTS = {}
@@ -77,16 +166,37 @@ init_locations()
 # ============== АВТОРИЗАЦИЯ ==============
 @app.route('/login', methods=['GET', 'POST'])
 def login():
+    ip = request.remote_addr
+    now = datetime.now().timestamp()
+    
+    # Check lockout
+    if ip in login_attempts:
+        attempts, last_time = login_attempts[ip]
+        if attempts >= MAX_ATTEMPTS and now - last_time < LOCKOUT_TIME:
+            return render_template_string(login_html, error=f"⚠️ Слишком много попыток. Попробуйте через {int((LOCKOUT_TIME - (now - last_time))/60)} мин.")
+    
     if request.method == 'POST':
         username = request.form['username']
         password = request.form['password']
+        
         with users_lock:
-            if username in users and check_password_hash(users[username]['password'], password):
-                session['username'] = username
-                session['role'] = users[username]['role']
-                return redirect('/admin' if users[username]['role'] == 'admin' else '/revision')
-            else:
-                return render_template_string(login_html, error="❌ Неверный логин или пароль")
+            user_found = username in users and check_password_hash(users[username]['password'], password)
+            
+        if user_found:
+            # Success: reset attempts and clear session (fix fixation)
+            login_attempts.pop(ip, None)
+            session.clear()
+            session['username'] = username
+            session['role'] = users[username]['role']
+            # Re-generate CSRF token for the new session
+            generate_csrf_token()
+            return redirect('/admin' if users[username]['role'] == 'admin' else '/revision')
+        else:
+            # Failure: increment attempts
+            attempts, last_time = login_attempts.get(ip, (0, 0))
+            login_attempts[ip] = (attempts + 1, now)
+            return render_template_string(login_html, error="❌ Неверный логин или пароль")
+            
     return render_template_string(login_html, now=datetime.now().strftime("%d.%m %H:%M"))
 
 @app.route('/logout')
@@ -94,120 +204,781 @@ def logout():
     session.clear()
     return redirect('/login')
 
+revision_html = '''<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Ревизия</title>
+<link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#0f0c29">
+<link rel="icon" href="/static/icon-512.png" type="image/png">
+<link rel="apple-touch-icon" href="/static/icon-512.png">
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
+<style>
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; margin: 0; padding: 0; }
+:root {
+    --bg1: #0f0c29; --bg2: #302b63; --bg3: #24243e;
+    --accent: #818cf8; --accent2: #a855f7;
+    --card: rgba(255,255,255,0.07);
+    --card-border: rgba(255,255,255,0.12);
+    --text: rgba(255,255,255,0.92);
+    --muted: rgba(255,255,255,0.4);
+    --success: #34d399; --danger: #f87171;
+}
+body {
+    font-family: 'Outfit', sans-serif;
+    background: linear-gradient(135deg, var(--bg1), var(--bg2), var(--bg3));
+    min-height: 100vh;
+    color: var(--text);
+    padding-bottom: 100px;
+    position: relative;
+}
+/* Blobs */
+.blob { position: fixed; border-radius: 50%; filter: blur(90px); opacity: 0.15; pointer-events: none; animation: bfloat 12s ease-in-out infinite; }
+.blob1 { width: 500px; height: 500px; background: #6366f1; top: -150px; left: -150px; }
+.blob2 { width: 400px; height: 400px; background: #a855f7; bottom: -100px; right: -100px; animation-delay: -4s; }
+@keyframes bfloat { 0%,100% { transform: translate(0,0); } 50% { transform: translate(20px,-20px); } }
+
+/* Header */
+header {
+    background: rgba(255,255,255,0.06);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border-bottom: 1px solid var(--card-border);
+    padding: 14px 20px;
+    position: sticky; top: 0; z-index: 100;
+    display: flex; justify-content: space-between; align-items: center;
+}
+.header-brand { display: flex; align-items: center; gap: 10px; }
+.header-icon {
+    width: 36px; height: 36px;
+    background: linear-gradient(135deg, #6366f1, #a855f7);
+    border-radius: 10px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 18px;
+}
+header h1 { font-size: 18px; font-weight: 700; color: white; letter-spacing: -0.3px; }
+.header-actions { display: flex; gap: 8px; }
+.btn-icon {
+    background: rgba(255,255,255,0.1);
+    border: 1px solid var(--card-border);
+    padding: 8px 14px;
+    border-radius: 10px;
+    color: white;
+    font-size: 13px;
+    font-weight: 600;
+    font-family: 'Outfit', sans-serif;
+    cursor: pointer;
+    transition: all 0.2s;
+    text-decoration: none;
+    display: inline-block;
+}
+.btn-icon:active { transform: scale(0.95); }
+
+/* Location Tabs */
+.tabs {
+    display: flex;
+    overflow-x: auto;
+    padding: 14px 20px;
+    gap: 10px;
+    scrollbar-width: none;
+}
+.tabs::-webkit-scrollbar { display: none; }
+.tab {
+    padding: 8px 20px;
+    background: rgba(255,255,255,0.07);
+    border: 1px solid var(--card-border);
+    border-radius: 50px;
+    font-weight: 600;
+    color: var(--muted);
+    white-space: nowrap;
+    font-size: 14px;
+    text-decoration: none;
+    transition: all 0.2s;
+    font-family: 'Outfit', sans-serif;
+}
+.tab.active {
+    background: linear-gradient(135deg, #6366f1, #8b5cf6);
+    color: white;
+    border-color: transparent;
+    box-shadow: 0 4px 16px rgba(99,102,241,0.4);
+}
+
+/* Container & Search */
+.container { padding: 0 20px; position: relative; z-index: 1; }
+.search-box { position: sticky; top: 65px; z-index: 90; padding: 10px 0; }
+.search-box input {
+    width: 100%;
+    padding: 13px 18px;
+    border: 1.5px solid var(--card-border);
+    border-radius: 14px;
+    background: rgba(255,255,255,0.08);
+    backdrop-filter: blur(20px);
+    color: white;
+    font-size: 15px;
+    font-family: 'Outfit', sans-serif;
+    outline: none;
+    transition: all 0.3s;
+}
+.search-box input::placeholder { color: var(--muted); }
+.search-box input:focus { border-color: rgba(99,102,241,0.6); background: rgba(255,255,255,0.11); }
+
+/* Category headers */
+.product-group { margin-bottom: 24px; }
+.product-group h3 {
+    margin: 16px 0 10px;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    color: var(--muted);
+    font-weight: 700;
+}
+
+/* Product Items */
+.product-item {
+    background: var(--card);
+    border: 1px solid var(--card-border);
+    padding: 16px;
+    border-radius: 16px;
+    margin-bottom: 8px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    cursor: pointer;
+    transition: transform 0.15s cubic-bezier(0.34,1.56,0.64,1), background 0.2s, box-shadow 0.2s;
+    animation: itemIn 0.4s ease both;
+}
+.product-item:active { transform: scale(0.97); }
+.product-item:hover { background: rgba(255,255,255,0.1); box-shadow: 0 4px 20px rgba(0,0,0,0.2); }
+@keyframes itemIn {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+.p-name { font-weight: 600; font-size: 15px; color: white; }
+.p-meta { font-size: 12px; color: var(--muted); margin-top: 3px; }
+.badge {
+    background: linear-gradient(135deg, #6366f1, #8b5cf6);
+    color: white;
+    padding: 5px 12px;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 700;
+    min-width: 36px;
+    text-align: center;
+    box-shadow: 0 4px 12px rgba(99,102,241,0.4);
+}
+
+/* Bottom Finish Button */
+.finish-btn {
+    position: fixed;
+    bottom: 20px; left: 20px; right: 20px;
+    background: linear-gradient(135deg, #6366f1, #8b5cf6);
+    color: white;
+    border: none;
+    padding: 18px;
+    border-radius: 18px;
+    font-size: 16px;
+    font-weight: 700;
+    font-family: 'Outfit', sans-serif;
+    box-shadow: 0 12px 32px rgba(99,102,241,0.5);
+    z-index: 90;
+    transition: transform 0.2s cubic-bezier(0.34,1.56,0.64,1), box-shadow 0.2s;
+    letter-spacing: 0.3px;
+}
+.finish-btn:active { transform: scale(0.97); box-shadow: 0 6px 16px rgba(99,102,241,0.4); }
+
+/* Modal */
+.modal {
+    display: none; position: fixed;
+    top: 0; left: 0; width: 100%; height: 100%;
+    background: rgba(0,0,0,0.7);
+    backdrop-filter: blur(8px);
+    z-index: 1000; align-items: flex-end;
+}
+.modal.active { display: flex; }
+.modal-content {
+    background: linear-gradient(180deg, #1e1b4b, #0f0c29);
+    border: 1px solid rgba(255,255,255,0.12);
+    width: 100%;
+    border-radius: 28px 28px 0 0;
+    padding: 24px 24px 36px;
+    box-shadow: 0 -20px 60px rgba(0,0,0,0.6);
+    animation: slideUp 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+}
+@keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
+.calc-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+.calc-title { font-size: 17px; font-weight: 700; color: white; max-width: 78%; line-height: 1.3; }
+.close-btn {
+    width: 32px; height: 32px;
+    background: rgba(255,255,255,0.1);
+    border: none; border-radius: 50%;
+    color: white; font-size: 16px; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+}
+.calc-display {
+    width: 100%;
+    font-size: 36px;
+    padding: 10px 12px;
+    text-align: right;
+    border: none;
+    border-bottom: 1.5px solid rgba(255,255,255,0.15);
+    margin-bottom: 20px;
+    font-family: 'Outfit', monospace;
+    font-weight: 600;
+    color: #a5b4fc;
+    background: transparent;
+    outline: none;
+}
+.calc-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+.c-btn {
+    padding: 16px 8px;
+    border-radius: 14px;
+    border: 1px solid rgba(255,255,255,0.08);
+    font-size: 20px;
+    font-weight: 600;
+    font-family: 'Outfit', sans-serif;
+    background: rgba(255,255,255,0.06);
+    color: white;
+    touch-action: manipulation;
+    transition: transform 0.1s cubic-bezier(0.34,1.56,0.64,1), background 0.15s;
+}
+.c-btn:active { transform: scale(0.92); background: rgba(255,255,255,0.12); }
+.op-btn { background: rgba(99,102,241,0.2); color: #a5b4fc; border-color: rgba(99,102,241,0.3); }
+.op-btn:active { background: rgba(99,102,241,0.35); }
+.submit-btn {
+    grid-column: span 2;
+    background: linear-gradient(135deg, #6366f1, #8b5cf6);
+    color: white;
+    border-color: transparent;
+    box-shadow: 0 6px 20px rgba(99,102,241,0.4);
+}
+.submit-btn:active { transform: scale(0.96); }
+.total-row { margin-top: 14px; text-align: center; font-size: 15px; color: var(--muted); }
+.highlight { color: #a5b4fc; font-weight: 700; font-size: 18px; }
+.history-log {
+    margin-top: 16px; background: rgba(255,255,255,0.04); border: 1px solid var(--card-border);
+    padding: 10px 12px; border-radius: 12px; font-size: 12px;
+    color: var(--muted); max-height: 90px; overflow-y: auto;
+}
+.history-item { border-bottom: 1px solid rgba(255,255,255,0.05); padding: 4px 0; }
+.values-list {
+    margin: 10px 0; max-height: 100px; overflow-y: auto;
+    border: 1px solid var(--card-border); border-radius: 10px;
+    background: rgba(255,255,255,0.04); display: none;
+}
+.value-item {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 8px 12px; border-bottom: 1px solid rgba(255,255,255,0.05); font-size: 14px; color: white;
+}
+.value-item:last-child { border-bottom: none; }
+.del-val-btn { color: var(--danger); background: none; border: none; cursor: pointer; font-size: 18px; padding: 0 6px; }
+.confirm-box { text-align: center; padding: 20px 0; border-radius: 28px; }
+.confirm-box h2 { color: var(--accent); font-size: 22px; margin-bottom: 10px; }
+.confirm-box p { color: var(--muted); margin-bottom: 24px; }
+</style>
+</head>
+<body>
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+<div class="blob blob1"></div>
+<div class="blob blob2"></div>
+
+<header>
+    <div class="header-brand">
+        <div class="header-icon">🍔</div>
+        <h1>Инвентаризация</h1>
+    </div>
+    <div class="header-actions">
+        {% if role == 'admin' %}
+        <a href="/admin"><button class="btn-icon">⚙️</button></a>
+        {% endif %}
+        <a href="/logout"><button class="btn-icon">Выход</button></a>
+    </div>
+</header>
+
+<div class="tabs">
+    <a href="/revision?location=Склад" class="tab {% if 'Склад' == current %}active{% endif %}">📦 Склад</a>
+    <a href="/revision?location=Кухня" class="tab {% if 'Кухня' == current %}active{% endif %}">🍳 Кухня</a>
+    <a href="/revision?location=Островок" class="tab {% if 'Островок' == current %}active{% endif %}">🏝 Островок</a>
+</div>
+
+<div class="container">
+    <div class="search-box">
+        <input type="text" id="search" placeholder="🔍 Поиск товара..." onkeyup="filterProducts()">
+    </div>
+    <div id="productList">
+    {% for cat, products in locations[current].items() %}
+      <div class="product-group">
+      {% if 'НА ДАТУ:' in cat | upper %}
+      <h3>НА ДАТУ: {{ now_date }}</h3>
+      {% else %}
+      <h3>{{cat}}</h3>
+      {% endif %}
+      {% for name, data in products.items() %}
+      {% set qty = inventory.get((current, name), 0) %}
+      {% set hist_list = history.get((current, name), []) %}
+      <div class="product-item" data-name="{{name | lower}}" data-history='{{ hist_list | tojson }}' onclick="openCalc({{ current|tojson|safe }}, {{ name|tojson|safe }}, {{ data.unit|tojson|safe }}, this)" style="animation-delay: {{ loop.index * 0.03 }}s">
+        <div>
+            <div class="p-name">{{name}}</div>
+            <div class="p-meta">{{data.unit}}</div>
+        </div>
+        {% if qty > 0%}<div class="badge">{{qty}}</div>{% endif %}
+      </div>
+      {% endfor %}
+      </div>
+    {% endfor %}
+    </div>
+</div>
+
+<button class="finish-btn" onclick="requestFinish()">✅ Завершить ревизию</button>
+
+<!-- Calculator Modal -->
+<div class="modal" id="calcModal" onclick="if(event.target===this)closeCalc()">
+<div class="modal-content">
+    <div class="calc-header">
+        <div class="calc-title" id="calcTitle"></div>
+        <button class="close-btn" onclick="closeCalc()">✕</button>
+    </div>
+    <input type="text" id="calcDisplay" class="calc-display" readonly value="0">
+    <div class="calc-grid">
+        <button class="c-btn" onclick="num('7')">7</button>
+        <button class="c-btn" onclick="num('8')">8</button>
+        <button class="c-btn" onclick="num('9')">9</button>
+        <button class="c-btn op-btn" onclick="setOp('/')">÷</button>
+        <button class="c-btn" onclick="num('4')">4</button>
+        <button class="c-btn" onclick="num('5')">5</button>
+        <button class="c-btn" onclick="num('6')">6</button>
+        <button class="c-btn op-btn" onclick="setOp('*')">×</button>
+        <button class="c-btn" onclick="num('1')">1</button>
+        <button class="c-btn" onclick="num('2')">2</button>
+        <button class="c-btn" onclick="num('3')">3</button>
+        <button class="c-btn op-btn" onclick="setOp('-')">−</button>
+        <button class="c-btn" onclick="num('.')">.</button>
+        <button class="c-btn" onclick="num('0')">0</button>
+        <button class="c-btn" onclick="clr()">C</button>
+        <button class="c-btn op-btn" onclick="setOp('+')">+</button>
+        <button class="c-btn op-btn" onclick="calculate()">=</button>
+        <button class="c-btn op-btn" style="font-size:15px" onclick="addToTotal()">Внести</button>
+        <button class="c-btn submit-btn" onclick="saveResult()">СОХРАНИТЬ</button>
+    </div>
+    <div id="addedValuesList" class="values-list"></div>
+    <div class="total-row">Итого: <span id="total" class="highlight">0</span> <span id="unit"></span></div>
+    <div style="margin-top:12px;">
+        <div style="font-size:11px;color:rgba(255,255,255,0.25);margin-bottom:6px;letter-spacing:0.5px;">ИСТОРИЯ</div>
+        <div id="calcHistory" class="history-log"></div>
+    </div>
+</div>
+</div>
+
+<!-- Confirm Modal -->
+<div class="modal" id="confirmModal">
+<div class="modal-content">
+    <div class="confirm-box">
+        <h2>✅ Запрос отправлен</h2>
+        <p>Ожидание подтверждения администратором...</p>
+        <button class="finish-btn" style="position:static;background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.15);box-shadow:none;" onclick="cancelRequest()">Отмена</button>
+    </div>
+</div>
+</div>
+
+<script>
+let loc='', prod='', unit='';
+let val='0', op=null, prev=null, total=0;
+let addedValues = [];
+
+function filterProducts(){
+  const filter=document.getElementById('search').value.toLowerCase();
+  document.querySelectorAll('.product-item').forEach(item=>{
+    item.style.display=item.getAttribute('data-name').includes(filter)?'flex':'none';
+  });
+  document.querySelectorAll('.product-group').forEach(group => {
+     const vis = Array.from(group.querySelectorAll('.product-item')).filter(i => i.style.display !== 'none');
+     group.style.display = vis.length > 0 ? 'block' : 'none';
+  });
+}
+
+function openCalc(l,p,u, el){
+  loc=l;prod=p;unit=u;total=0;val='0';op=null;prev=null;
+  addedValues = [];
+  renderValuesList();
+  document.getElementById('calcTitle').innerText=p;
+  document.getElementById('unit').innerText=u;
+  document.getElementById('calcDisplay').value='0';
+  document.getElementById('total').innerText='0';
+  const hist = JSON.parse(el.getAttribute('data-history') || '[]');
+  renderHistory(hist);
+  document.getElementById('calcModal').classList.add('active');
+}
+
+function renderHistory(history) {
+    const c = document.getElementById('calcHistory');
+    if(history.length > 0) {
+        c.innerHTML = history.map(h => {
+             let text = '', id = null;
+             if (typeof h === 'string') { text = h; } else { text = h.text; id = h.id; }
+             let delBtn = id ? `<button class="del-val-btn" onclick="deleteHistoryItem('${id}', '${loc}', '${prod}')">×</button>` : '';
+             return `<div class="history-item" style="display:flex;justify-content:space-between;"><span>${text}</span>${delBtn}</div>`;
+        }).reverse().join('');
+    } else { c.innerHTML = '<span style="opacity:0.4">История пуста</span>'; }
+}
+
+async function deleteHistoryItem(id, location, name) {
+    if(!confirm('Удалить запись? Изменит остаток.')) return;
+    const csrfToken = document.querySelector('input[name="csrf_token"]')?.value || "";
+    const fd = new FormData();
+    fd.append('id', id); fd.append('location', location); fd.append('name', name);
+    const res = await fetch('/delete_history_api', {
+        method: 'POST',
+        headers: { 'X-CSRF-Token': csrfToken },
+        body: fd
+    });
+    if (res.ok) { window.location.reload(); } else { alert('Ошибка'); }
+}
+
+function closeCalc(){document.getElementById('calcModal').classList.remove('active');}
+function num(n){if(val==='0'||val==='Error')val=n;else val+=n;document.getElementById('calcDisplay').value=val;}
+function setOp(o){prev=parseFloat(val);val='0';op=o;}
+function calculate(){if(op&&prev!=null){const cur=parseFloat(val);let r;
+  switch(op){case '+':r=prev+cur;break;case '-':r=prev-cur;break;case '*':r=prev*cur;break;case '/':r=cur!==0?prev/cur:'Error';break;}
+  val=r.toString();op=null;prev=null;document.getElementById('calcDisplay').value=val;}}
+function clr(){val='0';prev=null;op=null;document.getElementById('calcDisplay').value='0';}
+
+function addToTotal(){
+    calculate();
+    let n=parseFloat(val);
+    if(!isNaN(n) && n !== 0){ addedValues.push(n); renderValuesList(); }
+    val='0'; document.getElementById('calcDisplay').value='0';
+}
+
+function renderValuesList() {
+    const list = document.getElementById('addedValuesList');
+    if (addedValues.length === 0) {
+        list.style.display = 'none'; list.innerHTML = ''; total = 0;
+    } else {
+        list.style.display = 'block';
+        list.innerHTML = addedValues.map((v, i) => `<div class="value-item"><span>${v}</span><button class="del-val-btn" onclick="removeValue(${i})">×</button></div>`).join('');
+        total = addedValues.reduce((a, b) => a + b, 0);
+    }
+    total = Math.round(total * 1000) / 1000;
+    document.getElementById('total').innerText = total;
+}
+
+function removeValue(i) { addedValues.splice(i, 1); renderValuesList(); }
+
+async function saveResult(){
+  let n = 0;
+  if (addedValues.length > 0) { n = total; } else { n = parseFloat(val); if (isNaN(n)) n = 0; }
+  if(isNaN(n)||n<=0){alert('Введите корректное число');return;}
+  const csrfToken = document.querySelector('input[name="csrf_token"]')?.value || "";
+  const fd=new FormData(); fd.append('location',loc); fd.append('name',prod); fd.append('count',n);
+  await fetch('/add_api',{
+    method:'POST',
+    headers: { 'X-CSRF-Token': csrfToken },
+    body:fd
+  });
+  closeCalc(); window.location.reload();
+}
+
+async function requestFinish(){
+  const csrfToken = document.querySelector('input[name="csrf_token"]')?.value || "";
+  await fetch('/request_finish?location=' + encodeURIComponent(loc||'Все'), {
+      method:'POST',
+      headers: { 'X-CSRF-Token': csrfToken }
+  });
+  document.getElementById('confirmModal').classList.add('active');
+}
+
+function cancelRequest(){ document.getElementById('confirmModal').classList.remove('active'); }
+</script>
+<script>
+if ('serviceWorker' in navigator) { navigator.serviceWorker.register('/sw.js'); }
+</script>
+</body>
+</html>'''
+
 login_html = '''<!DOCTYPE html>
 <html lang="ru">
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Вход</title>
-<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600&display=swap" rel="stylesheet">
+<title>Ревизия</title>
+<link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#0f0c29">
+<link rel="icon" href="/static/icon-512.png" type="image/png">
+<link rel="apple-touch-icon" href="/static/icon-512.png">
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
 <style>
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; margin: 0; padding: 0; }
 :root {
-    --primary: #6366f1;
-    --primary-dark: #4f46e5;
-    --bg-gradient: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
-    --card-bg: rgba(255, 255, 255, 0.95);
-    --text-color: #1e293b;
-    --error-bg: #fee2e2;
-    --error-text: #991b1b;
+    --accent: #818cf8;
+    --accent2: #c084fc;
+    --bg1: #0f0c29;
+    --bg2: #302b63;
+    --bg3: #24243e;
 }
-* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 body {
     font-family: 'Outfit', sans-serif;
-    background: var(--bg-gradient);
-    height: 100vh;
+    background: linear-gradient(135deg, var(--bg1), var(--bg2), var(--bg3));
+    min-height: 100vh;
     display: flex;
     align-items: center;
     justify-content: center;
-    margin: 0;
     padding: 20px;
+    overflow: hidden;
+}
+
+/* Animated blobs */
+.blob {
+    position: fixed;
+    border-radius: 50%;
+    filter: blur(80px);
+    opacity: 0.25;
+    animation: float 8s ease-in-out infinite;
+    pointer-events: none;
+}
+.blob1 { width: 400px; height: 400px; background: #6366f1; top: -100px; left: -100px; animation-delay: 0s; }
+.blob2 { width: 350px; height: 350px; background: #a855f7; bottom: -80px; right: -80px; animation-delay: -3s; }
+.blob3 { width: 250px; height: 250px; background: #06b6d4; top: 40%; left: 40%; animation-delay: -5s; }
+@keyframes float {
+    0%, 100% { transform: translate(0, 0) scale(1); }
+    33% { transform: translate(30px, -30px) scale(1.05); }
+    66% { transform: translate(-20px, 20px) scale(0.95); }
+}
+
+/* Splash Screen */
+#splash {
+    position: fixed;
+    inset: 0;
+    background: linear-gradient(135deg, var(--bg1), var(--bg2), var(--bg3));
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    z-index: 9999;
+    transition: opacity 0.8s ease, transform 0.8s ease;
+}
+#splash.hide {
+    opacity: 0;
+    transform: scale(1.05);
+    pointer-events: none;
+}
+.splash-logo {
+    width: 100px;
+    height: 100px;
+    background: rgba(255,255,255,0.1);
+    backdrop-filter: blur(20px);
+    border-radius: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 52px;
+    border: 1.5px solid rgba(255,255,255,0.2);
+    animation: logoIn 0.7s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+    box-shadow: 0 20px 60px rgba(99,102,241,0.4);
+}
+@keyframes logoIn {
+    from { opacity: 0; transform: scale(0.5) rotate(-10deg); }
+    to   { opacity: 1; transform: scale(1) rotate(0deg); }
+}
+.splash-title {
+    color: white;
+    font-size: 28px;
+    font-weight: 700;
+    margin-top: 24px;
+    letter-spacing: -0.5px;
+    animation: fadeUp 0.6s 0.3s ease both;
+}
+.splash-sub {
+    color: rgba(255,255,255,0.5);
+    font-size: 14px;
+    margin-top: 8px;
+    animation: fadeUp 0.6s 0.5s ease both;
+}
+@keyframes fadeUp {
+    from { opacity: 0; transform: translateY(16px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+.splash-bar {
+    width: 180px;
+    height: 3px;
+    background: rgba(255,255,255,0.15);
+    border-radius: 999px;
+    margin-top: 40px;
+    overflow: hidden;
+    animation: fadeUp 0.6s 0.6s ease both;
+}
+.splash-bar-fill {
+    height: 100%;
+    background: linear-gradient(90deg, #6366f1, #a855f7);
+    border-radius: 999px;
+    animation: load 1.6s 0.4s ease-out both;
+}
+@keyframes load {
+    from { width: 0%; }
+    to   { width: 100%; }
+}
+
+/* Login Card */
+.login-wrap {
+    position: relative;
+    z-index: 1;
+    width: 100%;
+    max-width: 400px;
+    animation: cardIn 0.6s 0.1s cubic-bezier(0.34, 1.2, 0.64, 1) both;
+    opacity: 0;
+}
+@keyframes cardIn {
+    from { opacity: 0; transform: translateY(40px) scale(0.95); }
+    to   { opacity: 1; transform: translateY(0) scale(1); }
 }
 .login-box {
-    background: var(--card-bg);
-    padding: 40px 30px;
-    border-radius: 24px;
-    box-shadow: 0 20px 60px rgba(0,0,0,0.5);
-    max-width: 400px;
-    width: 100%;
-    backdrop-filter: blur(10px);
-    animation: fadeIn 0.5s ease-out;
+    background: rgba(255,255,255,0.08);
+    backdrop-filter: blur(30px);
+    -webkit-backdrop-filter: blur(30px);
+    border: 1.5px solid rgba(255,255,255,0.15);
+    padding: 40px 32px;
+    border-radius: 28px;
+    box-shadow: 0 30px 80px rgba(0,0,0,0.5);
 }
-@keyframes fadeIn { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
-h1 {
-    text-align: center;
-    color: var(--primary);
-    margin-bottom: 30px;
-    font-weight: 600;
-    font-size: 28px;
+.brand {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    margin-bottom: 32px;
 }
-.form-group { margin-bottom: 20px; }
+.brand-icon {
+    width: 52px;
+    height: 52px;
+    background: linear-gradient(135deg, #6366f1, #a855f7);
+    border-radius: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 26px;
+    box-shadow: 0 8px 24px rgba(99,102,241,0.4);
+}
+.brand-text h1 {
+    color: white;
+    font-size: 22px;
+    font-weight: 700;
+    letter-spacing: -0.3px;
+}
+.brand-text p {
+    color: rgba(255,255,255,0.4);
+    font-size: 13px;
+    margin-top: 1px;
+}
+
+.form-group { margin-bottom: 18px; }
 .form-group label {
     display: block;
     margin-bottom: 8px;
     font-weight: 600;
-    color: #475569;
-    font-size: 14px;
+    color: rgba(255,255,255,0.6);
+    font-size: 12px;
     text-transform: uppercase;
-    letter-spacing: 0.5px;
+    letter-spacing: 1px;
 }
+.input-wrap { position: relative; }
 .form-group input {
     width: 100%;
     padding: 14px 16px;
-    border: 2px solid #e2e8f0;
-    border-radius: 12px;
+    border: 1.5px solid rgba(255,255,255,0.12);
+    border-radius: 14px;
     font-size: 16px;
+    font-family: 'Outfit', sans-serif;
     transition: all 0.3s ease;
-    background: #f8fafc;
-}
-.form-group input:focus {
+    background: rgba(255,255,255,0.07);
+    color: white;
     outline: none;
-    border-color: var(--primary);
-    background: white;
-    box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.1);
+}
+.form-group input::placeholder { color: rgba(255,255,255,0.25); }
+.form-group input:focus {
+    border-color: rgba(99,102,241,0.7);
+    background: rgba(255,255,255,0.1);
+    box-shadow: 0 0 0 4px rgba(99,102,241,0.15);
 }
 .btn {
     width: 100%;
-    background: var(--primary);
+    background: linear-gradient(135deg, #6366f1, #8b5cf6);
     color: white;
     border: none;
     padding: 16px;
-    border-radius: 12px;
-    font-weight: 600;
+    border-radius: 14px;
+    font-weight: 700;
     cursor: pointer;
     font-size: 16px;
-    transition: transform 0.2s, box-shadow 0.2s;
-    margin-top: 10px;
+    font-family: 'Outfit', sans-serif;
+    letter-spacing: 0.3px;
+    transition: transform 0.15s cubic-bezier(0.34,1.56,0.64,1), box-shadow 0.2s ease;
+    margin-top: 8px;
+    box-shadow: 0 8px 24px rgba(99,102,241,0.4);
 }
-.btn:active { transform: scale(0.98); }
+.btn:active { transform: scale(0.96); box-shadow: 0 4px 12px rgba(99,102,241,0.3); }
+.btn:hover { transform: translateY(-1px); box-shadow: 0 12px 32px rgba(99,102,241,0.5); }
 .error {
-    color: var(--error-text);
-    background: var(--error-bg);
-    padding: 12px;
+    color: #fca5a5;
+    background: rgba(239,68,68,0.15);
+    padding: 12px 16px;
     border-radius: 12px;
-    margin-bottom: 20px;
+    margin-bottom: 18px;
     text-align: center;
     font-size: 14px;
-    border: 1px solid #fecaca;
+    border: 1px solid rgba(239,68,68,0.3);
 }
+.version { text-align: center; color: rgba(255,255,255,0.2); font-size: 11px; margin-top: 24px; letter-spacing: 0.5px; }
 </style>
 </head>
 <body>
+
+<!-- Splash Screen -->
+<div id="splash">
+    <div class="splash-logo">🍔</div>
+    <div class="splash-title">Ревизия</div>
+    <div class="splash-sub">Система учета товаров</div>
+    <div class="splash-bar"><div class="splash-bar-fill"></div></div>
+</div>
+
+<!-- Background Blobs -->
+<div class="blob blob1"></div>
+<div class="blob blob2"></div>
+<div class="blob blob3"></div>
+
+<div class="login-wrap">
 <div class="login-box">
-<h1>🔐 Вход</h1>
-{% if error %}<div class="error">{{error}}</div>{% endif %}
-<form method="post">
-<div class="form-group">
-  <label>Логин</label>
-  <input type="text" name="username" required autocomplete="username">
+    <div class="brand">
+        <div class="brand-icon">🍔</div>
+        <div class="brand-text">
+            <h1>Ревизия</h1>
+            <p>Система учёта товаров</p>
+        </div>
+    </div>
+    {% if error %}<div class="error">{{error}}</div>{% endif %}
+    <form method="post">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <div class="form-group">
+            <label>Логин</label>
+            <input type="text" name="username" placeholder="Введите логин" required autocomplete="username">
+        </div>
+        <div class="form-group">
+            <label>Пароль</label>
+            <input type="password" name="password" placeholder="Введите пароль" required autocomplete="current-password">
+        </div>
+        <button class="btn" type="submit">Войти →</button>
+    </form>
+    <div class="version">{{ now }}</div>
 </div>
-<div class="form-group">
-  <label>Пароль</label>
-  <input type="password" name="password" required autocomplete="current-password">
 </div>
-<button class="btn" type="submit">Войти</button>
-</form>
-<div style="text-align:center;color:#999;font-size:12px;margin-top:20px;">Версия: {{ now }}</div>
-</div>
+
+<script>
+setTimeout(() => {
+    document.getElementById('splash').classList.add('hide');
+    document.querySelector('.login-wrap').style.animationPlayState = 'running';
+}, 1800);
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js');
+}
+</script>
 </body>
 </html>'''
 
@@ -240,6 +1011,10 @@ def admin_panel():
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>Панель Администратора</title>
+<link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#f8fafc">
+<link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/static/icon.svg">
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600&display=swap" rel="stylesheet">
 <style>
 :root {
@@ -353,6 +1128,7 @@ header h1 { margin: 0; font-size: 22px; color: var(--primary); }
 <header>
     <h1>👨‍💼 Панель Администратора</h1>
     <div class="header-actions">
+        <button class="btn btn-primary" id="notifyBtn" onclick="subscribePush()">🔔 Уведомления</button>
         <a href="/revision"><button class="btn btn-primary">📊 Ревизия</button></a>
         <a href="/logout"><button class="btn btn-outline">Выход</button></a>
     </div>
@@ -369,8 +1145,9 @@ header h1 { margin: 0; font-size: 22px; color: var(--primary); }
     <div class="card">
         <h2>Создать оператора</h2>
         <form method="post" action="/admin/create_user">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <input class="form-input" type="text" name="username" placeholder="Логин" required>
-            <input class="form-input" type="text" name="password" placeholder="Пароль (опционально)">
+            <input class="form-input" type="password" name="password" placeholder="Пароль (опционально)">
             <button class="btn btn-primary" type="submit">Создать</button>
         </form>
     </div>
@@ -383,7 +1160,8 @@ header h1 { margin: 0; font-size: 22px; color: var(--primary); }
             <td align="right">
             {% if user != 'admin' %}
             <form method="post" action="/admin/delete_user" style="display:inline;">
-            <input type="hidden" name="username" value="{{user}}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="username" value="{{ user }}">
             <button class="btn btn-danger" onclick="return confirm('Удалить?')">×</button>
             </form>
             {% endif %}
@@ -409,7 +1187,7 @@ header h1 { margin: 0; font-size: 22px; color: var(--primary); }
             </div>
             <div style="font-size:12px;color:#999;margin-left:5px;">ИЛИ Выберите конкретно:</div>
             {% for loc in LOCATIONS %}
-            <div class="scope-option location-opt" onclick="toggleScope('{{loc}}', this)">
+            <div class="scope-option location-opt" onclick="toggleScope({{ loc|tojson|safe }}, this)">
                 <span>📍 {{loc}}</span>
             </div>
             {% endfor %}
@@ -421,6 +1199,7 @@ header h1 { margin: 0; font-size: 22px; color: var(--primary); }
     <div class="card">
         <h2>Добавить / Удалить (Стандарт)</h2>
         <form method="post" action="/admin/edit_products">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <div style="margin-bottom:15px; border: 1px solid #e2e8f0; padding: 10px; border-radius: 12px;">
                 <label style="display:block; margin-bottom:10px; font-weight:600;">Где добавить/изменить?</label>
                 <div style="display:flex; flex-direction:column; gap:8px;">
@@ -467,11 +1246,13 @@ header h1 { margin: 0; font-size: 22px; color: var(--primary); }
             <div style="color:#666;margin:5px 0;">от {{data.user}}</div>
             <div style="display:flex;gap:10px;margin-top:10px;">
                 <form method="post" action="/admin/finish_confirm" style="width:100%">
-                    <input type="hidden" name="request_id" value="{{req_id}}">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <input type="hidden" name="request_id" value="{{ req_id }}">
                     <button class="btn btn-primary" style="width:100%">Подтвердить</button>
                 </form>
                  <form method="post" action="/admin/finish_cancel" style="width:100%">
-                    <input type="hidden" name="request_id" value="{{req_id}}">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <input type="hidden" name="request_id" value="{{ req_id }}">
                     <button class="btn btn-danger" style="width:100%">Отклонить</button>
                 </form>
             </div>
@@ -557,14 +1338,80 @@ async function confirmDelete() {
     }
     if (!confirm('Вы уверены, что хотите удалить ' + selectedProduct + '?')) return;
     
+    const csrfToken = document.querySelector('input[name="csrf_token"]')?.value || "";
     await fetch('/admin/delete_product', {
         method: 'POST',
-        headers: {'Content-Type': 'application/json'},
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRF-Token': csrfToken
+        },
         body: JSON.stringify({product: selectedProduct, scope: deleteScope})
     });
     
     alert('Удалено!');
     window.location.reload();
+}
+</script>
+<script>
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js');
+}
+</script>
+<script>
+const VAPID_KEY = 'BGsP3cZlbHjunitjrMxFkVhtMbs0Cf_1n0OiNE3jJDVBJqZiMQOxFG6Kw4CaRJHIFLl6npHAsAqP9p-bifiJlJI';
+
+function urlBase64ToUint8Array(base64String) {
+    const padding = '='.repeat((4 - base64String.length % 4) % 4);
+    const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+    const rawData = atob(base64);
+    return Uint8Array.from([...rawData].map(c => c.charCodeAt(0)));
+}
+
+async function subscribePush() {
+    const btn = document.getElementById('notifyBtn');
+    if (!('Notification' in window) || !('serviceWorker' in navigator)) {
+        alert('Ваш браузер не поддерживает уведомления');
+        return;
+    }
+    const perm = await Notification.requestPermission();
+    if (perm !== 'granted') {
+        btn.innerText = '🚫 Уведомления заблокированы';
+        return;
+    }
+    try {
+        const reg = await navigator.serviceWorker.ready;
+        const sub = await reg.pushManager.subscribe({
+            userVisibleOnly: true,
+            applicationServerKey: urlBase64ToUint8Array(VAPID_KEY)
+        });
+        const csrfToken = document.querySelector('input[name="csrf_token"]')?.value || "";
+        await fetch('/push_subscribe', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRF-Token': csrfToken
+            },
+            body: JSON.stringify(sub)
+        });
+        btn.innerText = '✅ Уведомления включены';
+        btn.style.background = '#10b981';
+        btn.disabled = true;
+    } catch(e) {
+        console.error('Push subscribe error', e);
+        btn.innerText = '❌ Ошибка подписки';
+    }
+}
+
+// Авто-восстановление подписки если уже разрешены
+if ('serviceWorker' in navigator && Notification.permission === 'granted') {
+    navigator.serviceWorker.ready.then(reg => {
+        reg.pushManager.getSubscription().then(sub => {
+            if (sub) {
+                const btn = document.getElementById('notifyBtn');
+                if (btn) { btn.innerText = '✅ Уведомления включены'; btn.style.background = '#10b981'; btn.disabled = true; }
+            }
+        });
+    });
 }
 </script>
 </body>
@@ -765,517 +1612,6 @@ def revision():
     now_date = datetime.now().strftime('%d.%m.%Y')
     return render_template_string(revision_html, locations=LOCATIONS, inventory=inv, history=hist, current=selected_location, role=session.get('role', 'operator'), now_date=now_date)
 
-revision_html = '''<!DOCTYPE html>
-<html lang="ru">
-<head>
-<meta charset="UTF-8"/>
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Ревизия</title>
-<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600&display=swap" rel="stylesheet">
-<style>
-:root {
-    --primary: #6366f1;
-    --primary-light: #818cf8;
-    --bg-body: #f1f5f9;
-    --card-bg: #ffffff;
-    --text-main: #1e293b;
-    --text-muted: #64748b;
-    --success: #10b981;
-    --danger: #ef4444;
-}
-* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-body {
-    font-family: 'Outfit', sans-serif;
-    background: var(--bg-body);
-    margin: 0;
-    padding: 0;
-    color: var(--text-main);
-    padding-bottom: 80px; /* Space for bottom actions */
-}
-header {
-    background: var(--card-bg);
-    padding: 15px 20px;
-    box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05);
-    position: sticky;
-    top: 0;
-    z-index: 100;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-}
-header h1 {
-    margin: 0;
-    font-size: 20px;
-    font-weight: 700;
-    background: linear-gradient(135deg, var(--primary), var(--primary-light));
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-}
-.header-actions { display: flex; gap: 10px; }
-.btn-icon {
-    background: #f8fafc;
-    border: none;
-    padding: 8px 12px;
-    border-radius: 8px;
-    color: var(--text-main);
-    font-size: 14px;
-    font-weight: 600;
-    cursor: pointer;
-}
-.tabs {
-    display: flex;
-    overflow-x: auto;
-    padding: 15px 20px;
-    gap: 12px;
-    background: var(--bg-body);
-    scrollbar-width: none;
-}
-.tabs::-webkit-scrollbar { display: none; }
-.tab {
-    padding: 8px 20px;
-    background: white;
-    border-radius: 50px;
-    font-weight: 600;
-    color: var(--text-muted);
-    text-decoration: none;
-    white-space: nowrap;
-    box-shadow: 0 1px 2px rgba(0,0,0,0.05);
-    transition: all 0.2s;
-    font-size: 14px;
-}
-.tab.active {
-    background: var(--primary);
-    color: white;
-    box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3);
-}
-.container { padding: 0 20px; }
-.search-box {
-    position: sticky;
-    top: 60px;
-    z-index: 90;
-    background: var(--bg-body);
-    padding: 10px 0;
-}
-.search-box input {
-    width: 100%;
-    padding: 12px 16px;
-    border: none;
-    border-radius: 12px;
-    background: white;
-    box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05);
-    font-size: 16px;
-    font-family: inherit;
-}
-.product-group { margin-bottom: 25px; }
-.product-group h3 {
-    margin: 15px 0 10px;
-    font-size: 13px;
-    text-transform: uppercase;
-    letter-spacing: 1px;
-    color: var(--text-muted);
-    font-weight: 700;
-}
-.product-item {
-    background: var(--card-bg);
-    padding: 16px;
-    border-radius: 12px;
-    margin-bottom: 10px;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.05);
-    cursor: pointer;
-    transition: transform 0.1s;
-}
-.product-item:active { transform: scale(0.98); }
-.p-name { font-weight: 500; font-size: 15px; }
-.p-meta { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
-.badge {
-    background: var(--primary);
-    color: white;
-    padding: 4px 10px;
-    border-radius: 6px;
-    font-size: 14px;
-    font-weight: 600;
-    min-width: 30px;
-    text-align: center;
-}
-/* Modal & Calc */
-.modal {
-    display: none;
-    position: fixed;
-    top: 0; left: 0; width: 100%; height: 100%;
-    background: rgba(15, 23, 42, 0.6);
-    backdrop-filter: blur(4px);
-    z-index: 1000;
-    align-items: flex-end; /* Sheet style on mobile */
-}
-.modal.active { display: flex; animation: fadeIn 0.2s; }
-.modal-content {
-    background: white;
-    width: 100%;
-    border-radius: 24px 24px 0 0;
-    padding: 24px;
-    box-shadow: 0 -10px 40px rgba(0,0,0,0.2);
-    animation: slideUp 0.3s cubic-bezier(0.16, 1, 0.3, 1);
-}
-@keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
-.calc-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
-.calc-title { font-size: 18px; font-weight: 700; color: var(--text-main); max-width: 80%; }
-.calc-display {
-    width: 100%;
-    font-size: 32px;
-    padding: 10px;
-    text-align: right;
-    border: none;
-    border-bottom: 2px solid #e2e8f0;
-    margin-bottom: 20px;
-    font-family: 'Outfit', monospace;
-    color: var(--primary);
-    background: transparent;
-}
-.calc-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
-.c-btn {
-    padding: 15px;
-    border-radius: 12px;
-    border: none;
-    font-size: 20px;
-    font-weight: 500;
-    background: #f1f5f9;
-    color: var(--text-main);
-    touch-action: manipulation;
-}
-.c-btn:active { background: #e2e8f0; }
-.op-btn { background: #e0e7ff; color: var(--primary); }
-.submit-btn {
-    grid-column: span 2;
-    background: var(--primary);
-    color: white;
-    font-weight: 600;
-}
-.total-row {
-    margin-top: 15px;
-    text-align: center;
-    font-size: 16px;
-    color: var(--text-muted);
-}
-.highlight { color: var(--primary); font-weight: 700; }
-.history-log {
-    margin-top: 20px;
-    background: #f8fafc;
-    padding: 10px;
-    border-radius: 8px;
-    font-size: 11px;
-    color: var(--text-muted);
-    max-height: 100px;
-    overflow-y: auto;
-}
-.history-item { border-bottom: 1px solid #e2e8f0; padding: 4px 0; }
-.history-item:last-child { border-bottom: none; }
-/* Added Values List */
-.values-list {
-    margin: 10px 0;
-    max-height: 100px;
-    overflow-y: auto;
-    border: 1px solid #e2e8f0;
-    border-radius: 8px;
-    background: #f8fafc;
-    display: none;
-}
-.value-item {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 8px 12px;
-    border-bottom: 1px solid #e2e8f0;
-    font-size: 14px;
-}
-.value-item:last-child { border-bottom: none; }
-.del-val-btn {
-    color: var(--danger);
-    background: none;
-    border: none;
-    cursor: pointer;
-    font-size: 18px;
-    padding: 0 8px;
-    line-height: 1;
-}
-
-.finish-btn {
-    position: fixed;
-    bottom: 20px;
-    left: 20px;
-    right: 20px;
-    background: var(--text-main);
-    color: white;
-    border: none;
-    padding: 16px;
-    border-radius: 16px;
-    font-size: 16px;
-    font-weight: 600;
-    box-shadow: 0 10px 20px rgba(0,0,0,0.1);
-    z-index: 90;
-}
-</style>
-</head>
-<body>
-<header>
-    <h1>Инвентаризация</h1>
-    <div class="header-actions">
-        {% if role == 'admin' %}
-        <a href="/admin"><button class="btn-icon">⚙️ Админ</button></a>
-        {% endif %}
-        <a href="/logout"><button class="btn-icon">Выход</button></a>
-    </div>
-</header>
-
-<div class="tabs">
-    <a href="/revision?location=Склад" class="tab {% if 'Склад' == current %}active{% endif %}">Склад</a>
-    <a href="/revision?location=Кухня" class="tab {% if 'Кухня' == current %}active{% endif %}">Кухня</a>
-    <a href="/revision?location=Островок" class="tab {% if 'Островок' == current %}active{% endif %}">Островок</a>
-</div>
-
-<div class="container">
-    <div class="search-box">
-        <input type="text" id="search" placeholder="🔍 Поиск товара..." onkeyup="filterProducts()">
-    </div>
-
-    <div id="productList">
-    {% for cat, products in locations[current].items() %}
-      <div class="product-group">
-      {% if 'НА ДАТУ:' in cat | upper %}
-      <h3>НА ДАТУ: {{ now_date }}</h3>
-      {% else %}
-      <h3>{{cat}}</h3>
-      {% endif %}
-      {% for name, data in products.items() %}
-      {% set qty = inventory.get((current, name), 0) %}
-      {% set hist_list = history.get((current, name), []) %}
-      <div class="product-item" data-name="{{name | lower}}" data-history='{{ hist_list | tojson }}' onclick="openCalc('{{current}}','{{name}}','{{data.unit}}', this)">
-        <div>
-            <div class="p-name">{{name}}</div>
-            <div class="p-meta">{{data.unit}}</div>
-        </div>
-        {% if qty > 0%}<div class="badge">{{qty}}</div>{% endif %}
-      </div>
-      {% endfor %}
-      </div>
-    {% endfor %}
-    </div>
-</div>
-
-<button class="finish-btn" onclick="requestFinish()">Завершить ревизию</button>
-
-<!-- Calculator Modal -->
-<div class="modal" id="calcModal" onclick="if(event.target===this)closeCalc()">
-<div class="modal-content">
-    <div class="calc-header">
-        <div class="calc-title" id="calcTitle"></div>
-        <button class="btn-icon" onclick="closeCalc()">✕</button>
-    </div>
-    <input type="text" id="calcDisplay" class="calc-display" readonly value="0">
-    <div class="calc-grid">
-        <button class="c-btn" onclick="num('7')">7</button>
-        <button class="c-btn" onclick="num('8')">8</button>
-        <button class="c-btn" onclick="num('9')">9</button>
-        <button class="c-btn op-btn" onclick="setOp('/')">÷</button>
-        
-        <button class="c-btn" onclick="num('4')">4</button>
-        <button class="c-btn" onclick="num('5')">5</button>
-        <button class="c-btn" onclick="num('6')">6</button>
-        <button class="c-btn op-btn" onclick="setOp('*')">×</button>
-        
-        <button class="c-btn" onclick="num('1')">1</button>
-        <button class="c-btn" onclick="num('2')">2</button>
-        <button class="c-btn" onclick="num('3')">3</button>
-        <button class="c-btn op-btn" onclick="setOp('-')">−</button>
-        
-        <button class="c-btn" onclick="num('.')">.</button>
-        <button class="c-btn" onclick="num('0')">0</button>
-        <button class="c-btn" onclick="clr()">C</button>
-        <button class="c-btn op-btn" onclick="setOp('+')">+</button>
-        
-        <button class="c-btn op-btn" onclick="calculate()">=</button>
-        <button class="c-btn op-btn" style="font-size:16px" onclick="addToTotal()">Внести</button>
-        <button class="c-btn submit-btn" onclick="saveResult()">СОХРАНИТЬ</button>
-    </div>
-    <div id="addedValuesList" class="values-list"></div>
-    <div class="total-row">Итого: <span id="total" class="highlight">0</span> <span id="unit"></span></div>
-    <div style="margin-top:15px;border-top:1px solid #eee;padding-top:10px;">
-        <div style="font-size:12px;color:#999;margin-bottom:5px;">История операций (текущая сессия):</div>
-        <div id="calcHistory" class="history-log"></div>
-    </div>
-</div>
-</div>
-
-<!-- Confirm Modal -->
-<div class="modal" id="confirmModal">
-<div class="modal-content" style="text-align:center;border-radius:24px;">
-    <h2 style="color:var(--primary);">Запрос отправлен</h2>
-    <p style="color:var(--text-muted);margin-bottom:20px;">Ожидание подтверждения администратором...</p>
-    <button class="finish-btn" style="position:static;background:#cbd5e1;color:#333;" onclick="cancelRequest()">Отмена</button>
-</div>
-</div>
-
-<script>
-let loc='', prod='', unit='';
-let val='0', op=null, prev=null, total=0;
-let addedValues = [];
-
-function filterProducts(){
-  const filter=document.getElementById('search').value.toLowerCase();
-  document.querySelectorAll('.product-item').forEach(item=>{
-    item.style.display=item.getAttribute('data-name').includes(filter)?'flex':'none';
-    if(item.style.display==='flex') item.closest('.product-group').style.display='block';
-  });
-  // Hide empty groups
-  document.querySelectorAll('.product-group').forEach(group => {
-     const visibleItems = Array.from(group.querySelectorAll('.product-item')).filter(i => i.style.display !== 'none');
-     group.style.display = visibleItems.length > 0 ? 'block' : 'none';
-  });
-}
-
-function openCalc(l,p,u, el){
-  loc=l;prod=p;unit=u;total=0;val='0';op=null;prev=null;
-  addedValues = [];
-  renderValuesList();
-  document.getElementById('calcTitle').innerText=p;
-  document.getElementById('unit').innerText=u;
-  document.getElementById('calcDisplay').value='0';
-  document.getElementById('total').innerText='0';
-  
-  // History
-  const history = JSON.parse(el.getAttribute('data-history') || '[]');
-  renderHistory(history);
-  document.getElementById('calcModal').classList.add('active');
-}
-
-function renderHistory(history) {
-    const historyContainer = document.getElementById('calcHistory');
-    if(history.length > 0) {
-        historyContainer.innerHTML = history.map(h => {
-             // Handle both old string format and new dict format
-             let text = '';
-             let id = null;
-             if (typeof h === 'string') {
-                 text = h;
-             } else {
-                 text = h.text;
-                 id = h.id;
-             }
-             
-             let delBtn = '';
-             if (id) {
-                 delBtn = `<button class="del-val-btn" onclick="deleteHistoryItem('${id}', '${loc}', '${prod}')" title="Удалить запись">×</button>`;
-             }
-             
-             return `<div class="history-item" style="display:flex;justify-content:space-between;">
-                <span>${text}</span>
-                ${delBtn}
-             </div>`;
-        }).reverse().join('');
-        historyContainer.style.display = 'block';
-    } else {
-        historyContainer.innerHTML = 'История пуста';
-        historyContainer.style.display = 'block';
-    }
-}
-
-async function deleteHistoryItem(id, location, name) {
-    if(!confirm('Удалить эту запись из истории? Это изменит текущий остаток.')) return;
-    
-    const fd = new FormData();
-    fd.append('id', id);
-    fd.append('location', location);
-    fd.append('name', name);
-    
-    const res = await fetch('/delete_history_api', {method:'POST', body:fd});
-    if (res.ok) {
-        window.location.reload();
-    } else {
-        alert('Ошибка при удалении');
-    }
-}
-
-function closeCalc(){document.getElementById('calcModal').classList.remove('active');}
-
-function num(n){if(val==='0'||val==='Error')val=n;else val+=n;document.getElementById('calcDisplay').value=val;}
-function setOp(o){prev=parseFloat(val);val='0';op=o;}
-function calculate(){if(op&&prev!=null){const cur=parseFloat(val);let r;
-  switch(op){case '+':r=prev+cur;break;case '-':r=prev-cur;break;case '*':r=prev*cur;break;case '/':r=cur!==0?prev/cur:'Error';break;}
-  val=r.toString();op=null;prev=null;document.getElementById('calcDisplay').value=val;}}
-function clr(){val='0';prev=null;op=null;document.getElementById('calcDisplay').value='0';}
-
-function addToTotal(){
-    calculate();
-    let n=parseFloat(val);
-    if(!isNaN(n) && n !== 0){
-        addedValues.push(n);
-        renderValuesList();
-    }
-    val='0';
-    document.getElementById('calcDisplay').value='0';
-}
-
-function renderValuesList() {
-    const list = document.getElementById('addedValuesList');
-    if (addedValues.length === 0) {
-        list.style.display = 'none';
-        list.innerHTML = '';
-        total = 0;
-    } else {
-        list.style.display = 'block';
-        list.innerHTML = addedValues.map((v, i) => `
-            <div class="value-item">
-                <span>${v}</span>
-                <button class="del-val-btn" onclick="removeValue(${i})">×</button>
-            </div>
-        `).join('');
-        total = addedValues.reduce((a, b) => a + b, 0);
-    }
-    // Round total to avoid float errors
-    total = Math.round(total * 1000) / 1000;
-    document.getElementById('total').innerText = total;
-}
-
-function removeValue(i) {
-    addedValues.splice(i, 1);
-    renderValuesList();
-}
-
-async function saveResult(){
-  // If user has put things in the list, use that total.
-  // We ignore 'val' if addedValues has items to prevent double adding if they forgot to click '+' on the last one, 
-  // OR we could try to be smart. Standard calc behavior: clear implicit buffer?
-  // Let's assume if addedValues > 0, the specific intention was to sum those values.
-  
-  let n = 0;
-  if (addedValues.length > 0) {
-      n = total;
-  } else {
-      n = parseFloat(val);
-      if (isNaN(n)) n = 0;
-  }
-  
-  if(isNaN(n)||n<=0){alert('Пожалуйста, введите корректное число');return;}
-  const fd=new FormData();fd.append('location',loc);fd.append('name',prod);fd.append('count',n);
-  await fetch('/add_api',{method:'POST',body:fd});
-  closeCalc();window.location.reload();
-}
-
-async function requestFinish(){
-  const resp = await fetch('/request_finish?location=' + encodeURIComponent(loc||'Все'), {method:'POST'});
-  document.getElementById('confirmModal').classList.add('active');
-}
-
-function cancelRequest(){
-  document.getElementById('confirmModal').classList.remove('active');
-  // Logic to actually cancel on server could be added here
-}
-</script>
-</body>
-</html>'''
-
 @app.route('/add_api', methods=['POST'])
 @require_login
 def add_api():
@@ -1313,6 +1649,10 @@ def delete_history_api():
             for i, item in enumerate(items):
                 # Check if item is dict (new format) and matches ID
                 if isinstance(item, dict) and item.get('id') == hist_id:
+                    # Security: Only admin or the user who created the entry can delete it
+                    if session.get('role') != 'admin' and item.get('user') != session.get('username'):
+                        return ('Permission denied', 403)
+                        
                     # Revert inventory count
                     count_to_remove = item.get('count', 0)
                     inventory[key] = inventory.get(key, 0) - count_to_remove
@@ -1333,9 +1673,31 @@ def request_finish():
         'location': location,
         'timestamp': datetime.now().strftime("%d.%m %H:%M:%S")
     }
+    # Отправляем push-уведомление всем администраторам
+    try:
+        send_push_notification(
+            title=f"🍔 Запрос на завершение ревизии",
+            body=f"Оператор {session['username']} завершил ревизию ({location})"
+        )
+    except Exception as e:
+        print(f"Push send error: {e}")
     return jsonify({'request_id': request_id})
+
+@app.route('/push_subscribe', methods=['POST'])
+@require_admin
+def push_subscribe():
+    """Save browser push subscription from admin."""
+    sub = request.json
+    if sub and sub not in push_subscriptions:
+        push_subscriptions.append(sub)
+    return jsonify({'status': 'subscribed'})
+
+@app.route('/vapid_public_key')
+def vapid_public_key():
+    return jsonify({'key': VAPID_PUBLIC_KEY})
 
 if __name__ == "__main__":
     port = int(os.environ.get('PORT', 5001))
-    debug = os.environ.get('FLASK_ENV') != 'production'
+    # Debug mode is only enabled if FLASK_DEBUG is explicitly set to 1
+    debug = os.environ.get('FLASK_DEBUG') == '1'
     app.run(host="0.0.0.0", port=port, debug=debug)
