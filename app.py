@@ -7,6 +7,8 @@ from datetime import datetime
 import secrets
 import os
 import uuid
+import sqlite3
+import json
 
 app = Flask(__name__)
 
@@ -24,14 +26,19 @@ def manifest():
 
 
 # --- Безопасность и Конфигурация ---
-secret_file = os.path.join(os.path.dirname(__file__), '.secret_key')
-if os.path.exists(secret_file):
-    with open(secret_file, 'r') as f:
-        app.secret_key = f.read().strip()
+# Используем переменную окружения SECRET_KEY (обязательно задать на Render!)
+_env_key = os.environ.get('SECRET_KEY')
+if _env_key:
+    app.secret_key = _env_key
 else:
-    app.secret_key = os.environ.get('SECRET_KEY', secrets.token_hex(32))
-    with open(secret_file, 'w') as f:
-        f.write(app.secret_key)
+    secret_file = os.path.join(os.path.dirname(__file__), '.secret_key')
+    if os.path.exists(secret_file):
+        with open(secret_file, 'r') as f:
+            app.secret_key = f.read().strip()
+    else:
+        app.secret_key = secrets.token_hex(32)
+        with open(secret_file, 'w') as f:
+            f.write(app.secret_key)
 
 app.config.update(
     SESSION_COOKIE_SECURE=True,
@@ -64,17 +71,280 @@ def add_security_headers(response):
     response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
     return response
 
-# Данные хранилища
-inventory = {}
-history = {}
-admin_pass = os.environ.get('ADMIN_PASSWORD', 'SuperAdmin!2026')
-users = {"admin": {"password": generate_password_hash(admin_pass), "role": "admin"}}
-pending_finish = {}
+# ============== БАЗА ДАННЫХ ==============
+DATABASE_URL = os.environ.get('DATABASE_URL', '')
+
+def _get_db():
+    url = DATABASE_URL
+    if url.startswith('postgres'):
+        import psycopg2
+        url = url.replace('postgres://', 'postgresql://', 1)
+        conn = psycopg2.connect(url)
+        return conn, 'pg'
+    path = os.path.join(os.path.dirname(__file__), 'data.db')
+    conn = sqlite3.connect(path, check_same_thread=False)
+    conn.execute('PRAGMA journal_mode=WAL')
+    return conn, 'sqlite'
+
+def _ph(db_type):
+    return '%s' if db_type == 'pg' else '?'
+
+def init_db():
+    conn, db_type = _get_db()
+    p = _ph(db_type)
+    try:
+        cur = conn.cursor()
+        cur.execute('''CREATE TABLE IF NOT EXISTS inventory (
+            location TEXT NOT NULL, name TEXT NOT NULL, count REAL NOT NULL DEFAULT 0,
+            PRIMARY KEY (location, name))''')
+        cur.execute('''CREATE TABLE IF NOT EXISTS history_items (
+            id TEXT PRIMARY KEY, location TEXT NOT NULL, name TEXT NOT NULL,
+            text TEXT NOT NULL, count REAL NOT NULL, username TEXT NOT NULL, timestamp TEXT NOT NULL)''')
+        cur.execute('''CREATE TABLE IF NOT EXISTS users (
+            username TEXT PRIMARY KEY, password_hash TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'operator')''')
+        cur.execute('''CREATE TABLE IF NOT EXISTS push_subscriptions (subscription TEXT PRIMARY KEY)''')
+        cur.execute('''CREATE TABLE IF NOT EXISTS pending_requests (
+            request_id TEXT PRIMARY KEY, username TEXT NOT NULL, location TEXT NOT NULL, timestamp TEXT NOT NULL)''')
+        cur.execute('''CREATE TABLE IF NOT EXISTS custom_products (
+            location TEXT NOT NULL, category TEXT NOT NULL, name TEXT NOT NULL,
+            code TEXT, unit TEXT DEFAULT 'шт', removed INTEGER DEFAULT 0,
+            PRIMARY KEY (location, category, name))''')
+        conn.commit()
+        admin_pass = os.environ.get('ADMIN_PASSWORD', 'SuperAdmin!2026')
+        if db_type == 'pg':
+            cur.execute(f'INSERT INTO users (username, password_hash, role) VALUES ({p},{p},{p}) ON CONFLICT DO NOTHING',
+                        ('admin', generate_password_hash(admin_pass), 'admin'))
+        else:
+            cur.execute(f'INSERT OR IGNORE INTO users (username, password_hash, role) VALUES ({p},{p},{p})',
+                        ('admin', generate_password_hash(admin_pass), 'admin'))
+        conn.commit()
+    finally:
+        conn.close()
+
+# --- inventory ---
+def db_get_inventory():
+    conn, _ = _get_db()
+    try:
+        cur = conn.cursor()
+        cur.execute('SELECT location, name, count FROM inventory')
+        return {(r[0], r[1]): r[2] for r in cur.fetchall()}
+    finally:
+        conn.close()
+
+def db_update_inventory(location, name, delta):
+    conn, db_type = _get_db()
+    p = _ph(db_type)
+    try:
+        cur = conn.cursor()
+        if db_type == 'pg':
+            cur.execute(f'INSERT INTO inventory (location,name,count) VALUES ({p},{p},{p}) ON CONFLICT (location,name) DO UPDATE SET count=inventory.count+EXCLUDED.count',
+                        (location, name, delta))
+        else:
+            cur.execute(f'INSERT INTO inventory (location,name,count) VALUES ({p},{p},{p}) ON CONFLICT (location,name) DO UPDATE SET count=count+excluded.count',
+                        (location, name, delta))
+        conn.commit()
+    finally:
+        conn.close()
+
+def db_revert_inventory(location, name, count):
+    conn, db_type = _get_db()
+    p = _ph(db_type)
+    try:
+        cur = conn.cursor()
+        cur.execute(f'UPDATE inventory SET count=count-{p} WHERE location={p} AND name={p}', (count, location, name))
+        conn.commit()
+    finally:
+        conn.close()
+
+def db_clear_inventory():
+    conn, _ = _get_db()
+    try:
+        cur = conn.cursor()
+        cur.execute('DELETE FROM inventory')
+        cur.execute('DELETE FROM history_items')
+        conn.commit()
+    finally:
+        conn.close()
+
+# --- history ---
+def db_get_history():
+    conn, _ = _get_db()
+    try:
+        cur = conn.cursor()
+        cur.execute('SELECT id, location, name, text, count, username, timestamp FROM history_items ORDER BY timestamp')
+        result = {}
+        for r in cur.fetchall():
+            key = (r[1], r[2])
+            result.setdefault(key, []).append({'id': r[0], 'text': r[3], 'count': r[4], 'user': r[5], 'timestamp': r[6]})
+        return result
+    finally:
+        conn.close()
+
+def db_add_history(location, name, item):
+    conn, db_type = _get_db()
+    p = _ph(db_type)
+    try:
+        cur = conn.cursor()
+        cur.execute(f'INSERT INTO history_items (id,location,name,text,count,username,timestamp) VALUES ({p},{p},{p},{p},{p},{p},{p})',
+                    (item['id'], location, name, item['text'], item['count'], item['user'], item['timestamp']))
+        conn.commit()
+    finally:
+        conn.close()
+
+def db_delete_history_item(hist_id):
+    conn, db_type = _get_db()
+    p = _ph(db_type)
+    try:
+        cur = conn.cursor()
+        cur.execute(f'SELECT count, username, location, name FROM history_items WHERE id={p}', (hist_id,))
+        row = cur.fetchone()
+        if not row:
+            return None
+        cur.execute(f'DELETE FROM history_items WHERE id={p}', (hist_id,))
+        conn.commit()
+        return row[0], row[1], row[2], row[3]
+    finally:
+        conn.close()
+
+# --- users ---
+def db_get_user(username):
+    conn, db_type = _get_db()
+    p = _ph(db_type)
+    try:
+        cur = conn.cursor()
+        cur.execute(f'SELECT password_hash, role FROM users WHERE username={p}', (username,))
+        row = cur.fetchone()
+        return {'password': row[0], 'role': row[1]} if row else None
+    finally:
+        conn.close()
+
+def db_get_all_users():
+    conn, _ = _get_db()
+    try:
+        cur = conn.cursor()
+        cur.execute('SELECT username, role FROM users')
+        return [(r[0], r[1]) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+def db_create_user(username, password_hash, role='operator'):
+    conn, db_type = _get_db()
+    p = _ph(db_type)
+    try:
+        cur = conn.cursor()
+        if db_type == 'pg':
+            cur.execute(f'INSERT INTO users (username,password_hash,role) VALUES ({p},{p},{p}) ON CONFLICT DO NOTHING', (username, password_hash, role))
+        else:
+            cur.execute(f'INSERT OR IGNORE INTO users (username,password_hash,role) VALUES ({p},{p},{p})', (username, password_hash, role))
+        conn.commit()
+    finally:
+        conn.close()
+
+def db_delete_user(username):
+    conn, db_type = _get_db()
+    p = _ph(db_type)
+    try:
+        cur = conn.cursor()
+        cur.execute(f'DELETE FROM users WHERE username={p}', (username,))
+        conn.commit()
+    finally:
+        conn.close()
+
+# --- push subscriptions ---
+def db_get_subscriptions():
+    conn, _ = _get_db()
+    try:
+        cur = conn.cursor()
+        cur.execute('SELECT subscription FROM push_subscriptions')
+        return [json.loads(r[0]) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+def db_add_subscription(sub):
+    conn, db_type = _get_db()
+    p = _ph(db_type)
+    try:
+        cur = conn.cursor()
+        if db_type == 'pg':
+            cur.execute(f'INSERT INTO push_subscriptions (subscription) VALUES ({p}) ON CONFLICT DO NOTHING', (json.dumps(sub),))
+        else:
+            cur.execute(f'INSERT OR IGNORE INTO push_subscriptions (subscription) VALUES ({p})', (json.dumps(sub),))
+        conn.commit()
+    finally:
+        conn.close()
+
+def db_remove_subscription(sub):
+    conn, db_type = _get_db()
+    p = _ph(db_type)
+    try:
+        cur = conn.cursor()
+        cur.execute(f'DELETE FROM push_subscriptions WHERE subscription={p}', (json.dumps(sub),))
+        conn.commit()
+    finally:
+        conn.close()
+
+# --- pending requests ---
+def db_get_pending():
+    conn, _ = _get_db()
+    try:
+        cur = conn.cursor()
+        cur.execute('SELECT request_id, username, location, timestamp FROM pending_requests')
+        return {r[0]: {'user': r[1], 'location': r[2], 'timestamp': r[3]} for r in cur.fetchall()}
+    finally:
+        conn.close()
+
+def db_add_pending(request_id, username, location, timestamp):
+    conn, db_type = _get_db()
+    p = _ph(db_type)
+    try:
+        cur = conn.cursor()
+        cur.execute(f'INSERT INTO pending_requests (request_id,username,location,timestamp) VALUES ({p},{p},{p},{p})',
+                    (request_id, username, location, timestamp))
+        conn.commit()
+    finally:
+        conn.close()
+
+def db_delete_pending(request_id):
+    conn, db_type = _get_db()
+    p = _ph(db_type)
+    try:
+        cur = conn.cursor()
+        cur.execute(f'DELETE FROM pending_requests WHERE request_id={p}', (request_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+# --- custom products ---
+def db_get_custom_products():
+    conn, _ = _get_db()
+    try:
+        cur = conn.cursor()
+        cur.execute('SELECT location, category, name, code, unit, removed FROM custom_products')
+        return cur.fetchall()
+    finally:
+        conn.close()
+
+def db_upsert_product(location, category, name, code, unit, removed=0):
+    conn, db_type = _get_db()
+    p = _ph(db_type)
+    try:
+        cur = conn.cursor()
+        if db_type == 'pg':
+            cur.execute(f'INSERT INTO custom_products (location,category,name,code,unit,removed) VALUES ({p},{p},{p},{p},{p},{p}) ON CONFLICT (location,category,name) DO UPDATE SET code=EXCLUDED.code,unit=EXCLUDED.unit,removed=EXCLUDED.removed',
+                        (location, category, name, code, unit, removed))
+        else:
+            cur.execute(f'INSERT OR REPLACE INTO custom_products (location,category,name,code,unit,removed) VALUES ({p},{p},{p},{p},{p},{p})',
+                        (location, category, name, code, unit, removed))
+        conn.commit()
+    finally:
+        conn.close()
+
+init_db()
 
 # Защита от брутфорса
 login_attempts = {}
 MAX_ATTEMPTS = 5
-LOCKOUT_TIME = 300 # 5 минут
+LOCKOUT_TIME = 300  # 5 минут
 
 inventory_lock = Lock()
 users_lock = Lock()
@@ -89,15 +359,10 @@ borDgJpEkcgUuXqekcCwCo/2n5uJ+ImUkg==
 VAPID_PUBLIC_KEY = "BGsP3cZlbHjunitjrMxFkVhtMbs0Cf_1n0OiNE3jJDVBJqZiMQOxFG6Kw4CaRJHIFLl6npHAsAqP9p-bifiJlJI"
 VAPID_CLAIMS = {"sub": "mailto:admin@revision-app.app"}
 
-# Хранилище push-подписок (админов)
-push_subscriptions = []
-
 def send_push_notification(title, body):
-    """Send push notification to all stored admin subscriptions."""
     from pywebpush import webpush, WebPushException
-    import json
-    dead = []
-    for sub in push_subscriptions:
+    subs = db_get_subscriptions()
+    for sub in subs:
         try:
             webpush(
                 subscription_info=sub,
@@ -107,12 +372,9 @@ def send_push_notification(title, body):
             )
         except WebPushException as e:
             if '410' in str(e) or '404' in str(e):
-                dead.append(sub)
+                db_remove_subscription(sub)
             else:
                 print(f"Push error: {e}")
-    for d in dead:
-        if d in push_subscriptions:
-            push_subscriptions.remove(d)
 
 # ПОЛНЫЙ СЛОВАРЬ ТОВАРОВ (динамически из шаблона template.xlsx)
 GLOBAL_PRODUCTS = {}
@@ -150,18 +412,26 @@ try:
 except Exception as e:
     print(f"Error loading products from template: {e}")
 
-LOCATIONS = {
-    "Склад": {},
-    "Кухня": {},
-    "Островок": {}
-}
+BASE_LOCATIONS = ["Склад", "Кухня", "Островок"]
 
-def init_locations():
-    for location in LOCATIONS:
+def get_locations():
+    locs = {}
+    for location in BASE_LOCATIONS:
+        locs[location] = {}
         for category, products in GLOBAL_PRODUCTS.items():
-            LOCATIONS[location][category] = dict(products)
-
-init_locations()
+            locs[location][category] = dict(products)
+    for row in db_get_custom_products():
+        location, category, name, code, unit, removed = row
+        if location not in locs:
+            locs[location] = {}
+        if removed:
+            if category in locs[location] and name in locs[location][category]:
+                del locs[location][category][name]
+                if not locs[location][category]:
+                    del locs[location][category]
+        else:
+            locs[location].setdefault(category, {})[name] = {'code': code or '', 'unit': unit or 'шт'}
+    return locs
 
 # ============== АВТОРИЗАЦИЯ ==============
 @app.route('/login', methods=['GET', 'POST'])
@@ -178,21 +448,18 @@ def login():
     if request.method == 'POST':
         username = request.form['username']
         password = request.form['password']
-        
-        with users_lock:
-            user_found = username in users and check_password_hash(users[username]['password'], password)
-            
+
+        user = db_get_user(username)
+        user_found = user is not None and check_password_hash(user['password'], password)
+
         if user_found:
-            # Success: reset attempts and clear session (fix fixation)
             login_attempts.pop(ip, None)
             session.clear()
             session['username'] = username
-            session['role'] = users[username]['role']
-            # Re-generate CSRF token for the new session
+            session['role'] = user['role']
             generate_csrf_token()
-            return redirect('/admin' if users[username]['role'] == 'admin' else '/revision')
+            return redirect('/admin' if user['role'] == 'admin' else '/revision')
         else:
-            # Failure: increment attempts
             attempts, last_time = login_attempts.get(ip, (0, 0))
             login_attempts[ip] = (attempts + 1, now)
             return render_template_string(login_html, error="❌ Неверный логин или пароль")
@@ -671,11 +938,13 @@ async function saveResult(){
   if(isNaN(n)||n<=0){alert('Введите корректное число');return;}
   const csrfToken = document.querySelector('input[name="csrf_token"]')?.value || "";
   const fd=new FormData(); fd.append('location',loc); fd.append('name',prod); fd.append('count',n);
-  await fetch('/add_api',{
+  const res = await fetch('/add_api',{
     method:'POST',
     headers: { 'X-CSRF-Token': csrfToken },
     body:fd
   });
+  if(res.status === 403) { alert('Сессия истекла. Страница будет перезагружена.'); window.location.reload(); return; }
+  if(!res.ok) { alert('Ошибка сохранения: ' + res.status); return; }
   closeCalc(); window.location.reload();
 }
 
@@ -1003,8 +1272,7 @@ def require_admin(f):
 @app.route('/admin')
 @require_admin
 def admin_panel():
-    with users_lock:
-        user_list = [(u, users[u]['role']) for u in users]
+    user_list = db_get_all_users()
     html = '''<!DOCTYPE html>
 <html lang="ru">
 <head>
@@ -1416,25 +1684,22 @@ if ('serviceWorker' in navigator && Notification.permission === 'granted') {
 </script>
 </body>
 </html>''' 
-    return render_template_string(html, users=user_list, pending_finish=pending_finish, LOCATIONS=LOCATIONS)
+    return render_template_string(html, users=user_list, pending_finish=db_get_pending(), LOCATIONS=get_locations())
 
 @app.route('/admin/create_user', methods=['POST'])
 @require_admin
 def create_user():
     username = request.form['username']
     password = request.form['password'] or secrets.token_urlsafe(8)
-    with users_lock:
-        if username not in users:
-            users[username] = {'password': generate_password_hash(password), 'role': 'operator'}
+    db_create_user(username, generate_password_hash(password))
     return redirect('/admin')
 
 @app.route('/admin/delete_user', methods=['POST'])
 @require_admin
 def delete_user():
     username = request.form['username']
-    with users_lock:
-        if username in users and username != 'admin':
-            del users[username]
+    if username != 'admin':
+        db_delete_user(username)
     return redirect('/admin')
 
 @app.route('/admin/edit_products', methods=['POST'])
@@ -1446,27 +1711,19 @@ def edit_products():
     code = request.form['code']
     unit = request.form['unit']
     action = request.form['action']
-    
-    # Если ничего не выбрано, ничего не делаем (или можно добавить default)
+
     if not locations:
         return redirect('/admin')
 
+    locs = get_locations()
     for location in locations:
-        # Защита если вдруг локация кривая
-        if location not in LOCATIONS:
+        if location not in locs:
             continue
-            
         if action == 'add':
-            if category not in LOCATIONS[location]:
-                LOCATIONS[location][category] = {}
-            LOCATIONS[location][category][name] = {'code': code, 'unit': unit}
+            db_upsert_product(location, category, name, code, unit, removed=0)
         elif action == 'remove':
-            if category in LOCATIONS[location] and name in LOCATIONS[location][category]:
-                del LOCATIONS[location][category][name]
-                # Удаляем категорию если пустая
-                if not LOCATIONS[location][category]:
-                    del LOCATIONS[location][category]
-                    
+            db_upsert_product(location, category, name, code, unit, removed=1)
+
     return redirect('/admin')
 
 @app.route('/admin/search_products')
@@ -1474,7 +1731,7 @@ def edit_products():
 def search_products():
     query = request.args.get('q', '').lower()
     results = set()
-    for loc_data in LOCATIONS.values():
+    for loc_data in get_locations().values():
         for cat, products in loc_data.items():
             for name in products:
                 if query in name.lower():
@@ -1486,52 +1743,44 @@ def search_products():
 def delete_product_endpoint():
     data = request.json
     product_name = data.get('product')
-    scope = data.get('scope') # 'global' or list of locations
-    
-    if scope == 'global':
-        # Remove from GLOBAL_PRODUCTS
-        for cat in list(GLOBAL_PRODUCTS.keys()):
-            if product_name in GLOBAL_PRODUCTS[cat]:
-                del GLOBAL_PRODUCTS[cat][product_name]
-        # Remove from all locations
-        for loc in LOCATIONS:
-            for cat in list(LOCATIONS[loc].keys()):
-                if product_name in LOCATIONS[loc][cat]:
-                    del LOCATIONS[loc][cat][product_name]
-    else:
-        # Remove from specific locations
-        for loc in scope:
-            if loc in LOCATIONS:
-                for cat in list(LOCATIONS[loc].keys()):
-                    if product_name in LOCATIONS[loc][cat]:
-                        del LOCATIONS[loc][cat][product_name]
-                        
+    scope = data.get('scope')
+
+    locs = get_locations()
+    targets = list(locs.keys()) if scope == 'global' else scope
+    for loc in targets:
+        if loc not in locs:
+            continue
+        for cat, products in locs[loc].items():
+            if product_name in products:
+                info = products[product_name]
+                db_upsert_product(loc, cat, product_name, info.get('code', ''), info.get('unit', 'шт'), removed=1)
+
     return jsonify({'status': 'ok'})
 
 @app.route("/admin/finish_confirm", methods=["POST"])
 @require_admin
 def finishconfirm():
     requestid = request.form.get("request_id")
-    if requestid in pending_finish:
-        data = pending_finish[requestid]
+    pending = db_get_pending()
+    if requestid in pending:
+        data = pending[requestid]
         operator_name = data.get('user', 'Unknown')
         timestamp = data.get('timestamp', '')
 
-        # Сбор данных и агрегация
-        aggregated_data = {} # code -> qty
-        with inventory_lock:
-            for location in LOCATIONS:
-                for cat, products in LOCATIONS[location].items():
-                    for name, info in products.items():
-                        qty = inventory.get((location, name), 0)
-                        if qty:
-                            code = str(info.get("code", ""))
-                            try:
-                                qty_val = float(qty)
-                            except ValueError:
-                                qty_val = 0
-                            if code:
-                                aggregated_data[code] = aggregated_data.get(code, 0) + qty_val
+        aggregated_data = {}
+        inv = db_get_inventory()
+        for location, loc_data in get_locations().items():
+            for cat, products in loc_data.items():
+                for name, info in products.items():
+                    qty = inv.get((location, name), 0)
+                    if qty:
+                        code = str(info.get("code", ""))
+                        try:
+                            qty_val = float(qty)
+                        except ValueError:
+                            qty_val = 0
+                        if code:
+                            aggregated_data[code] = aggregated_data.get(code, 0) + qty_val
 
         # Загружаем шаблон
         file_path = os.path.join(os.path.dirname(__file__), 'template.xlsx')
@@ -1574,11 +1823,8 @@ def finishconfirm():
         wb.save(output)
         output.seek(0)
 
-        # очищаем состояние ревизии
-        inventory.clear()
-        history.clear()
-        if requestid in pending_finish:
-            del pending_finish[requestid]
+        db_clear_inventory()
+        db_delete_pending(requestid)
 
         # отправляем файл пользователю
         filename = f"revision_{timestamp.replace(':', '-')}_{operator_name}.xlsx"
@@ -1596,8 +1842,7 @@ def finishconfirm():
 @require_admin
 def finish_cancel():
     request_id = request.form['request_id']
-    if request_id in pending_finish:
-        del pending_finish[request_id]
+    db_delete_pending(request_id)
     return redirect('/admin')
 
 # ============== РЕВИЗИЯ (Для операторов и админа) ==============
@@ -1605,12 +1850,8 @@ def finish_cancel():
 @require_login
 def revision():
     selected_location = request.args.get("location", "Склад")
-    with inventory_lock:
-        inv = dict(inventory)
-        hist = dict(history)
-    
     now_date = datetime.now().strftime('%d.%m.%Y')
-    return render_template_string(revision_html, locations=LOCATIONS, inventory=inv, history=hist, current=selected_location, role=session.get('role', 'operator'), now_date=now_date)
+    return render_template_string(revision_html, locations=get_locations(), inventory=db_get_inventory(), history=db_get_history(), current=selected_location, role=session.get('role', 'operator'), now_date=now_date)
 
 @app.route('/add_api', methods=['POST'])
 @require_login
@@ -1619,60 +1860,38 @@ def add_api():
     name = request.form['name']
     count = float(request.form['count'])
     timestamp = datetime.now().strftime("%d.%m %H:%M:%S")
-    key = (location, name)
-    key = (location, name)
-    msg = f"{timestamp}: {session['username']} добавил {count}"
     item = {
         'id': str(uuid.uuid4()),
-        'text': msg,
+        'text': f"{timestamp}: {session['username']} добавил {count}",
         'count': count,
         'user': session['username'],
         'timestamp': timestamp
     }
-    with inventory_lock:
-        inventory[key] = inventory.get(key, 0) + count
-        history.setdefault(key, []).append(item)
+    db_update_inventory(location, name, count)
+    db_add_history(location, name, item)
     return ('', 204)
 
 @app.route('/delete_history_api', methods=['POST'])
 @require_login
 def delete_history_api():
     hist_id = request.form['id']
-    location = request.form['location']
-    name = request.form['name']
-    key = (location, name)
-    
-    with inventory_lock:
-        if key in history:
-            # Find item
-            items = history[key]
-            for i, item in enumerate(items):
-                # Check if item is dict (new format) and matches ID
-                if isinstance(item, dict) and item.get('id') == hist_id:
-                    # Security: Only admin or the user who created the entry can delete it
-                    if session.get('role') != 'admin' and item.get('user') != session.get('username'):
-                        return ('Permission denied', 403)
-                        
-                    # Revert inventory count
-                    count_to_remove = item.get('count', 0)
-                    inventory[key] = inventory.get(key, 0) - count_to_remove
-                    
-                    # Remove from history
-                    items.pop(i)
-                    return ('', 204)
-                    
-    return ('Item not found', 404)
+    result = db_delete_history_item(hist_id)
+    if result is None:
+        return ('Item not found', 404)
+    count_to_remove, item_user, location, name = result
+    if session.get('role') != 'admin' and item_user != session.get('username'):
+        db_add_history(location, name, {'id': hist_id, 'text': '(restored)', 'count': count_to_remove, 'user': item_user, 'timestamp': datetime.now().strftime("%d.%m %H:%M:%S")})
+        return ('Permission denied', 403)
+    db_revert_inventory(location, name, count_to_remove)
+    return ('', 204)
 
 @app.route('/request_finish', methods=['POST'])
 @require_login
 def request_finish():
     request_id = secrets.token_urlsafe(8)
     location = request.args.get('location', 'Все')
-    pending_finish[request_id] = {
-        'user': session['username'],
-        'location': location,
-        'timestamp': datetime.now().strftime("%d.%m %H:%M:%S")
-    }
+    timestamp = datetime.now().strftime("%d.%m %H:%M:%S")
+    db_add_pending(request_id, session['username'], location, timestamp)
     # Отправляем push-уведомление всем администраторам
     try:
         send_push_notification(
@@ -1686,10 +1905,9 @@ def request_finish():
 @app.route('/push_subscribe', methods=['POST'])
 @require_admin
 def push_subscribe():
-    """Save browser push subscription from admin."""
     sub = request.json
-    if sub and sub not in push_subscriptions:
-        push_subscriptions.append(sub)
+    if sub:
+        db_add_subscription(sub)
     return jsonify({'status': 'subscribed'})
 
 @app.route('/vapid_public_key')
