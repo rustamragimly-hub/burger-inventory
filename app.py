@@ -3557,9 +3557,47 @@ function filterOrgs(q) {
 </html>'''
 
 
-# Создаём таблицы при первом запуске (для Render и других платформ)
+# Создаём таблицы и owner при первом запуске
 with app.app_context():
     db.create_all()
+
+    # Автосоздание owner из переменных окружения (для Render/VPS)
+    owner_email = os.environ.get('OWNER_EMAIL')
+    owner_password = os.environ.get('OWNER_PASSWORD')
+    if owner_email and owner_password:
+        existing = OwnerUser.query.filter_by(email=owner_email).first()
+        if not existing:
+            owner = OwnerUser()
+            owner.email = owner_email
+            owner.set_password(owner_password)
+            db.session.add(owner)
+            db.session.commit()
+            print(f'✅ Owner создан: {owner_email}')
+
+    # Автосоздание демо-компании из переменных окружения
+    demo_email = os.environ.get('DEMO_EMAIL')
+    demo_password = os.environ.get('DEMO_PASSWORD')
+    demo_name = os.environ.get('DEMO_ORG_NAME', 'Демо Бургерная')
+    if demo_email and demo_password:
+        existing_org = Organization.query.filter_by(owner_email=demo_email).first()
+        if not existing_org:
+            from datetime import timedelta
+            org = Organization(
+                name=demo_name,
+                owner_email=demo_email,
+                email_verified=True,
+                plan='trial',
+                trial_ends_at=datetime.utcnow() + timedelta(days=30)
+            )
+            db.session.add(org)
+            db.session.flush()
+            user = User(org_id=org.id, username='admin', role='admin', email=demo_email)
+            user.set_password(demo_password)
+            db.session.add(user)
+            for loc_name in ['Склад', 'Кухня', 'Островок']:
+                db.session.add(Location(org_id=org.id, name=loc_name))
+            db.session.commit()
+            print(f'✅ Демо-компания создана: {demo_email}')
 
 if __name__ == "__main__":
     port = int(os.environ.get('PORT', 5001))
