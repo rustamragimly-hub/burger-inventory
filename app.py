@@ -4,7 +4,7 @@ Spurt — мульти-тенантная система инвентариза�
 """
 from flask import (
     Flask, request, render_template_string, redirect, url_for, flash, jsonify,
-    send_file, abort,
+    send_file, abort, session,
 )
 from flask_login import (
     LoginManager, UserMixin, login_user, logout_user,
@@ -38,6 +38,32 @@ migrate = Migrate(app, db)
 login_manager = LoginManager(app)
 login_manager.login_view = 'login'
 login_manager.login_message = 'Пожалуйста, войдите для доступа.'
+# Отключаем basic protection — иначе смена IP/UA (мобильный интернет, апгрейд браузера)
+# выбрасывает пользователя. Для инвентаризации достаточно обычной сессии.
+login_manager.session_protection = None
+
+# Render/любой reverse-proxy: доверяем X-Forwarded-* чтобы Flask знал настоящий scheme
+from werkzeug.middleware.proxy_fix import ProxyFix
+app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
+
+
+@app.template_filter('qty')
+def _qty_fmt(v):
+    """Округлить до 3 знаков и отформатировать с запятой (RU)."""
+    if v is None:
+        return ''
+    try:
+        n = round(float(v), 3)
+    except (TypeError, ValueError):
+        return str(v)
+    if n == int(n):
+        return str(int(n))
+    return f'{n:g}'.replace('.', ',')
+
+
+@app.before_request
+def make_session_permanent():
+    session.permanent = True
 
 
 # ============== ОБЁРТКИ ДЛЯ FLASK-LOGIN ==============
@@ -219,7 +245,7 @@ def verify_email(token):
 
     admin = User.query.filter_by(org_id=org.id, role='admin').first()
     if admin:
-        login_user(AuthUser(admin, 'user'))
+        login_user(AuthUser(admin, 'user'), remember=True)
         admin.last_login_at = datetime.utcnow()
         db.session.commit()
         return redirect('/admin')
@@ -266,7 +292,7 @@ def login():
             log_attempt(ip, username, True)
             user.last_login_at = datetime.utcnow()
             db.session.commit()
-            login_user(AuthUser(user, 'user'))
+            login_user(AuthUser(user, 'user'), remember=True)
             if user.role == 'admin':
                 return redirect('/admin')
             return redirect('/revision')
@@ -1010,6 +1036,7 @@ def revision():
             ).all()
             for it in items:
                 qty_map[it.product_id] = qty_map.get(it.product_id, 0) + (it.quantity or 0)
+            qty_map = {k: round(v, 3) for k, v in qty_map.items()}
 
     # Группировка товаров по категориям (с учётом "без категории")
     cat_map = {c.id: c for c in categories}
@@ -1050,7 +1077,8 @@ def revision_add():
     try:
         location_id = int(request.form.get('location_id') or 0)
         product_id = int(request.form.get('product_id') or 0)
-        count = float(request.form.get('count') or 0)
+        raw_count = str(request.form.get('count') or '0').replace(',', '.')
+        count = round(float(raw_count), 3)
     except (TypeError, ValueError):
         return jsonify({'ok': False, 'error': 'bad params'}), 400
 
@@ -1113,6 +1141,42 @@ def revision_finish():
         rev.finished_at = datetime.utcnow()
         db.session.commit()
         return jsonify({'ok': True})
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'ok': False, 'error': str(e)}), 400
+
+
+@app.route('/revision/edit_item/<int:item_id>', methods=['POST'])
+@login_required_user
+def revision_edit_item(item_id):
+    org = _current_org()
+    if not org:
+        return jsonify({'ok': False, 'error': 'no org'}), 400
+    item = RevisionItem.query.get(item_id)
+    if not item:
+        return jsonify({'ok': False, 'error': 'not found'}), 404
+    rev = db.session.get(Revision, item.revision_id)
+    if not rev or rev.org_id != org.id:
+        return jsonify({'ok': False, 'error': 'forbidden'}), 403
+    is_admin = (current_user.user and current_user.user.role == 'admin')
+    if not is_admin and item.added_by_user_id != current_user.raw_id:
+        return jsonify({'ok': False, 'error': 'forbidden'}), 403
+
+    try:
+        raw = request.form.get('quantity') or request.form.get('count') or '0'
+        new_qty = float(str(raw).replace(',', '.'))
+    except (TypeError, ValueError):
+        return jsonify({'ok': False, 'error': 'bad quantity'}), 400
+    if new_qty <= 0:
+        return jsonify({'ok': False, 'error': 'quantity must be > 0'}), 400
+
+    try:
+        item.quantity = round(new_qty, 3)
+        db.session.commit()
+        total = db.session.query(db.func.coalesce(db.func.sum(RevisionItem.quantity), 0)).filter_by(
+            revision_id=item.revision_id, product_id=item.product_id, location_id=item.location_id,
+        ).scalar() or 0
+        return jsonify({'ok': True, 'total': float(total)})
     except Exception as e:
         db.session.rollback()
         return jsonify({'ok': False, 'error': str(e)}), 400
@@ -1193,16 +1257,18 @@ def revision_product_history(product_id):
         uname = users.get(it.added_by_user_id, '—')
         can_delete = is_admin or (it.added_by_user_id == current_uid)
         ts = it.added_at.strftime('%d.%m %H:%M') if it.added_at else ''
+        qty_rounded = round(it.quantity or 0, 3)
+        qty_str = f'{qty_rounded:g}'.replace('.', ',')
         out.append({
             'id': it.id,
-            'quantity': it.quantity,
+            'quantity': qty_rounded,
             'user': uname,
             'timestamp': ts,
             'can_delete': can_delete,
-            'text': f'{ts}: {uname} добавил {it.quantity}',
+            'text': f'{ts}: {uname} добавил {qty_str}',
         })
-        total += (it.quantity or 0)
-    return jsonify({'ok': True, 'items': out, 'total': total})
+        total += qty_rounded
+    return jsonify({'ok': True, 'items': out, 'total': round(total, 3)})
 
 
 # ============== АДМИН: РЕВИЗИИ (ЗАПРОСЫ/ИСТОРИЯ) ==============
@@ -1491,7 +1557,7 @@ def owner_login():
             error = 'Неверный email или пароль.'
         else:
             log_attempt(ip, email, True)
-            login_user(AuthUser(owner, 'owner'))
+            login_user(AuthUser(owner, 'owner'), remember=True)
             return redirect('/owner')
 
     return render_template_string(owner_login_html, error=error)
@@ -2882,6 +2948,9 @@ header p{font-size:12px;color:rgba(255,255,255,0.4);margin-top:2px;}
 .hist-item{display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-bottom:1px solid rgba(255,255,255,0.05);font-size:11px;color:rgba(255,255,255,0.5);}
 .hist-item:last-child{border-bottom:none;}
 .hist-del{background:none;border:none;color:rgba(239,68,68,0.6);cursor:pointer;font-size:14px;padding:0 4px;}
+.hist-edit{background:none;border:none;color:rgba(124,108,240,0.75);cursor:pointer;font-size:13px;padding:0 4px;}
+.hist-edit:hover{color:rgba(124,108,240,1);}
+.hist-actions{display:inline-flex;gap:2px;}
 </style>
 </head>
 <body>
@@ -2929,10 +2998,10 @@ header p{font-size:12px;color:rgba(255,255,255,0.4);margin-top:2px;}
           {% else %}
             {% set badge_cls = 'badge-red' %}
           {% endif %}
-          {% set badge_text = qty|string + ' / ' + norm|int|string %}
+          {% set badge_text = qty|qty + ' / ' + norm|int|string %}
         {% else %}
           {% set badge_cls = 'badge-neutral' %}
-          {% set badge_text = qty|string if qty > 0 else '' %}
+          {% set badge_text = qty|qty if qty > 0 else '' %}
         {% endif %}
         <div class="product-item" data-name="{{ p.name|lower }}"
           onclick="openCalc({{ p.id }}, {{ selected.id }}, '{{ p.name|replace("'","\\'")|e }}', '{{ p.unit }}')">
@@ -3053,14 +3122,32 @@ async function loadHistory(prodId, locId) {
     const res = await fetch(`/revision/product_history/${prodId}?location_id=${locId}`);
     const data = await res.json();
     const el = document.getElementById('histLog');
-    if (!data.length) { el.innerHTML = '<span style="color:rgba(255,255,255,0.3)">Пусто</span>'; return; }
-    el.innerHTML = data.map(h =>
+    const items = (data && data.items) ? data.items : (Array.isArray(data) ? data : []);
+    if (!items.length) { el.innerHTML = '<span style="color:rgba(255,255,255,0.3)">Пусто</span>'; return; }
+    el.innerHTML = items.map(h =>
       `<div class="hist-item">
         <span>${h.text}</span>
-        <button class="hist-del" onclick="deleteHistItem(${h.id})">×</button>
+        <span class="hist-actions">
+          <button class="hist-edit" onclick="editHistItem(${h.id}, ${h.quantity})" title="Изменить">✎</button>
+          <button class="hist-del" onclick="deleteHistItem(${h.id})" title="Удалить">×</button>
+        </span>
       </div>`
     ).join('');
   } catch(e) { }
+}
+
+async function editHistItem(itemId, currentQty) {
+  const raw = prompt('Новое значение:', String(currentQty).replace('.', ','));
+  if (raw === null) return;
+  const n = parseNum(raw);
+  if (isNaN(n) || n <= 0) { alert('Введите корректное число'); return; }
+  const fd = new FormData();
+  fd.append('quantity', round3(n));
+  const res = await fetch(`/revision/edit_item/${itemId}`, {method: 'POST', body: fd});
+  const data = await res.json();
+  if (!data.ok) { alert('Ошибка: ' + (data.error || '')); return; }
+  await loadHistory(curProdId, curLocId);
+  location.reload();
 }
 
 async function deleteHistItem(itemId) {
@@ -3073,6 +3160,7 @@ async function deleteHistItem(itemId) {
 function closeCalc() { document.getElementById('calcModal').classList.remove('active'); }
 
 function parseNum(s){ return parseFloat(String(s).replace(',', '.')); }
+function round3(n){ return Math.round(n * 1000) / 1000; }
 function num(n) {
   // Разрешаем только одну запятую/точку в числе
   if ((n === ',' || n === '.') && (val.indexOf(',') !== -1 || val.indexOf('.') !== -1)) return;
@@ -3084,6 +3172,7 @@ function calculate() {
   if(op&&prev!=null){
     const cur=parseNum(val); let r;
     switch(op){case'+':r=prev+cur;break;case'-':r=prev-cur;break;case'*':r=prev*cur;break;case'/':r=cur!==0?prev/cur:'Error';break;}
+    if(typeof r === 'number') r = round3(r);
     val=(typeof r === 'number' ? r.toString().replace('.', ',') : r); op=null; prev=null; document.getElementById('calcDisplay').value=val;
   }
 }
@@ -3112,6 +3201,7 @@ function removeValue(i) { addedValues.splice(i,1); renderValuesList(); }
 async function saveResult() {
   let n = addedValues.length ? total : parseNum(val);
   if(isNaN(n)||n<=0){alert('Введите корректное число');return;}
+  n = round3(n);
   const fd = new FormData();
   fd.append('product_id', curProdId);
   fd.append('location_id', curLocId);
