@@ -3666,7 +3666,7 @@ with app.app_context():
             db.session.flush()
 
             # Создаём admin-пользователя
-            user = User(org_id=org.id, username='admin', role='admin', email=mobar_email)
+            user = User(org_id=org.id, username='TimurSaipov', role='admin', email=mobar_email)
             user.set_password(mobar_password)
             db.session.add(user)
 
