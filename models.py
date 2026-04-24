@@ -26,8 +26,11 @@ class Organization(db.Model):
     trial_ends_at = db.Column(db.DateTime, nullable=True)
     subscription_ends_at = db.Column(db.DateTime, nullable=True)
 
-    is_blocked = db.Column(db.Boolean, default=False)  # Заблокирована ли компания
+    is_blocked = db.Column(db.Boolean, default=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    # Кастомный Excel-шаблон для отчётов (хранится как бинарные данные)
+    excel_template = db.Column(db.LargeBinary, nullable=True)
 
     # Связи — все данные компании
     users = db.relationship('User', backref='organization', lazy=True, cascade='all, delete-orphan')

@@ -1208,7 +1208,11 @@ def revision_product_history(product_id):
 
 # ============== АДМИН: РЕВИЗИИ (ЗАПРОСЫ/ИСТОРИЯ) ==============
 def _build_revision_xlsx(rev):
-    """Сгенерировать xlsx со сгруппированными итогами ревизии."""
+    """Сгенерировать xlsx с итогами ревизии.
+    Если у компании есть кастомный шаблон (excel_template) — заполняем его.
+    Иначе генерируем стандартный отчёт.
+    """
+    import openpyxl
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
@@ -1217,6 +1221,45 @@ def _build_revision_xlsx(rev):
     user = db.session.get(User, rev.user_id) if rev.user_id else None
 
     items = RevisionItem.query.filter_by(revision_id=rev.id).all()
+
+    # Если у компании есть кастомный Excel-шаблон — заполняем его
+    if org and org.excel_template:
+        pids = {i.product_id for i in items}
+        products = {p.id: p for p in Product.query.filter(Product.id.in_(pids)).all()} if pids else {}
+
+        # Агрегируем: код товара → суммарное количество
+        aggregated = {}
+        for it in items:
+            p = products.get(it.product_id)
+            if p and p.code:
+                aggregated[p.code] = aggregated.get(p.code, 0) + (it.quantity or 0)
+
+        wb = openpyxl.load_workbook(BytesIO(org.excel_template))
+        ws = wb.active
+
+        today_str = (rev.finished_at or datetime.utcnow()).strftime('%d.%m.%Y')
+
+        for row in range(1, ws.max_row + 1):
+            for col in range(1, 10):
+                cell = ws.cell(row=row, column=col)
+                val = cell.value
+                if isinstance(val, str):
+                    if 'Дата печати' in val:
+                        cell.value = f'Дата печати: {today_str}'
+                    elif 'НА ДАТУ:' in val.upper():
+                        cell.value = f'НА ДАТУ: {today_str}'
+
+            # Заполняем остаток по коду из колонки B (2)
+            code_cell = ws.cell(row=row, column=2).value
+            if code_cell is not None:
+                code_str = str(code_cell).strip()
+                if code_str in aggregated and aggregated[code_str] > 0:
+                    ws.cell(row=row, column=7, value=aggregated[code_str])
+
+        buf = BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        return buf
 
     # Собрать все product_id, category_id
     pids = {i.product_id for i in items}
@@ -3598,6 +3641,87 @@ with app.app_context():
                 db.session.add(Location(org_id=org.id, name=loc_name))
             db.session.commit()
             print(f'✅ Демо-компания создана: {demo_email}')
+
+    # Автосоздание ООО "Мобар" с товарами из template.xlsx
+    mobar_email = os.environ.get('MOBAR_EMAIL')
+    mobar_password = os.environ.get('MOBAR_PASSWORD')
+    if mobar_email and mobar_password:
+        existing_mobar = Organization.query.filter_by(owner_email=mobar_email).first()
+        if not existing_mobar:
+            template_path = os.path.join(os.path.dirname(__file__), 'template.xlsx')
+            template_bytes = None
+            if os.path.exists(template_path):
+                with open(template_path, 'rb') as f:
+                    template_bytes = f.read()
+
+            org = Organization(
+                name='ООО "Мобар"',
+                owner_email=mobar_email,
+                email_verified=True,
+                plan='pro',
+                subscription_ends_at=datetime.utcnow() + timedelta(days=365),
+                excel_template=template_bytes
+            )
+            db.session.add(org)
+            db.session.flush()
+
+            # Создаём admin-пользователя
+            user = User(org_id=org.id, username='admin', role='admin', email=mobar_email)
+            user.set_password(mobar_password)
+            db.session.add(user)
+
+            # Локации
+            for loc_name in ['Склад', 'Кухня', 'Островок']:
+                db.session.add(Location(org_id=org.id, name=loc_name))
+            db.session.flush()
+
+            # Импортируем товары из template.xlsx
+            if os.path.exists(template_path):
+                import openpyxl as _oxl
+                wb = _oxl.load_workbook(template_path, data_only=True)
+                ws = wb.active
+                current_cat_name = 'Разное'
+                cat_cache = {}
+                count = 0
+                skip_headers = {'Код', 'Товар', ''}
+
+                for row in ws.iter_rows(values_only=True):
+                    code_raw = row[1] if len(row) > 1 else None
+                    name_raw = row[2] if len(row) > 2 else None
+                    unit_raw = row[5] if len(row) > 5 else None
+
+                    # Строка-категория
+                    if code_raw and isinstance(code_raw, str) and not name_raw:
+                        val = code_raw.strip()
+                        if val and not val.startswith('Дата печати') and val not in skip_headers:
+                            current_cat_name = val
+                        continue
+
+                    # Строка-товар
+                    if code_raw and name_raw and str(code_raw).strip() not in skip_headers:
+                        code = str(code_raw).strip()
+                        name = str(name_raw).strip()
+                        unit = str(unit_raw).strip() if unit_raw else 'шт'
+
+                        # Получаем или создаём категорию
+                        if current_cat_name not in cat_cache:
+                            cat = Category(org_id=org.id, name=current_cat_name)
+                            db.session.add(cat)
+                            db.session.flush()
+                            cat_cache[current_cat_name] = cat.id
+
+                        product = Product(
+                            org_id=org.id,
+                            category_id=cat_cache[current_cat_name],
+                            name=name,
+                            code=code,
+                            unit=unit
+                        )
+                        db.session.add(product)
+                        count += 1
+
+            db.session.commit()
+            print(f'✅ ООО Мобар создан: {mobar_email}, товаров: {count}')
 
 if __name__ == "__main__":
     port = int(os.environ.get('PORT', 5001))
