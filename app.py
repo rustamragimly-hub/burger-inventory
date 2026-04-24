@@ -3604,6 +3604,16 @@ function filterOrgs(q) {
 with app.app_context():
     db.create_all()
 
+    # Миграция: добавляем колонку excel_template если её нет (PostgreSQL)
+    try:
+        with db.engine.connect() as conn:
+            conn.execute(db.text(
+                'ALTER TABLE organizations ADD COLUMN IF NOT EXISTS excel_template BYTEA'
+            ))
+            conn.commit()
+    except Exception as _e:
+        print(f'⚠️  Миграция excel_template: {_e}')
+
     # Автосоздание owner из переменных окружения (для Render/VPS)
     owner_email = os.environ.get('OWNER_EMAIL')
     owner_password = os.environ.get('OWNER_PASSWORD')
@@ -3674,6 +3684,8 @@ with app.app_context():
             for loc_name in ['Склад', 'Кухня', 'Островок']:
                 db.session.add(Location(org_id=org.id, name=loc_name))
             db.session.flush()
+
+            count = 0
 
             # Импортируем товары из template.xlsx
             if os.path.exists(template_path):
