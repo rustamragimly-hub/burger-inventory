@@ -671,10 +671,9 @@ def admin_add_user():
         u.set_password(password)
         db.session.add(u)
         db.session.commit()
-        if generated:
-            flash(f'Оператор «{username}» создан.', 'success')
-            return redirect(url_for('admin_panel', new_user=username, new_pwd=generated) + '#tab-users')
         flash(f'Оператор «{username}» создан.', 'success')
+        # Всегда показываем реквизиты входа (админ должен передать их оператору)
+        return redirect(url_for('admin_panel', new_user=username, new_pwd=password) + '#tab-users')
     except Exception as e:
         db.session.rollback()
         flash(f'Ошибка: {e}', 'error')
@@ -2000,7 +1999,7 @@ login_html = '''<!DOCTYPE html>
     <div class="form-group">
       <label>Email компании</label>
       <input class="input" type="email" name="email" required autocomplete="email" placeholder="company@example.com">
-      <div class="hint">Email вашей компании (тот, на который регистрировались)</div>
+      <div class="hint">Общий email компании (один на всех сотрудников). Администратор указывает свой email, оператор — тот же email, который дал ему администратор.</div>
     </div>
     <div class="form-group">
       <label>Логин</label>
@@ -2334,8 +2333,11 @@ hr.soft { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 
 
   {% if new_user_pwd %}
   <div class="pwd-box">
-    🔑 Пароль для <b>{{ new_user_name }}</b>: <code>{{ new_user_pwd }}</code>
-    — сохраните его сейчас, повторно показан не будет.
+    🔑 <b>Данные для входа оператора «{{ new_user_name }}»</b> (передайте ему):<br>
+    📧 Email компании: <code>{{ org.owner_email }}</code><br>
+    👤 Логин: <code>{{ new_user_name }}</code><br>
+    🔐 Пароль: <code>{{ new_user_pwd }}</code><br>
+    <small>Сохраните сейчас — повторно пароль показан не будет.</small>
   </div>
   {% endif %}
 
@@ -2512,7 +2514,7 @@ hr.soft { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 
               <td><b>{{ p.name }}</b> <span class="meta" style="font-size:11px;color:rgba(255,255,255,0.4);">({{ p.unit }})</span></td>
               {% for loc in locations %}
               <td>
-                <input type="number" step="any" min="0"
+                <input type="text" inputmode="decimal" pattern="[0-9]*[.,]?[0-9]*"
                        data-pid="{{ p.id }}" data-lid="{{ loc.id }}"
                        value="{{ norms_map.get((p.id, loc.id), 0) }}">
               </td>
@@ -2747,7 +2749,9 @@ async function saveNorms() {
   document.querySelectorAll('#norms-table input').forEach(inp => {
     const pid = inp.dataset.pid, lid = inp.dataset.lid;
     if (!payload[pid]) payload[pid] = {};
-    payload[pid][lid] = parseFloat(inp.value || '0') || 0;
+    // Принимаем и "0,354" и "0.354"
+    const rawVal = (inp.value || '0').replace(',', '.');
+    payload[pid][lid] = parseFloat(rawVal) || 0;
   });
   try {
     const res = await fetch('/admin/norms/save', {
@@ -2976,7 +2980,7 @@ header p{font-size:12px;color:rgba(255,255,255,0.4);margin-top:2px;}
     <button class="cbtn cbtn-num" onclick="num('2')">2</button>
     <button class="cbtn cbtn-num" onclick="num('3')">3</button>
     <button class="cbtn cbtn-op" onclick="setOp('-')">−</button>
-    <button class="cbtn cbtn-num" onclick="num('.')">.</button>
+    <button class="cbtn cbtn-num" onclick="num(',')">,</button>
     <button class="cbtn cbtn-num" onclick="num('0')">0</button>
     <button class="cbtn cbtn-op" onclick="clr()">C</button>
     <button class="cbtn cbtn-op" onclick="setOp('+')">+</button>
@@ -3068,38 +3072,45 @@ async function deleteHistItem(itemId) {
 
 function closeCalc() { document.getElementById('calcModal').classList.remove('active'); }
 
-function num(n) { if(val==='0'||val==='Error') val=n; else val+=n; document.getElementById('calcDisplay').value=val; }
-function setOp(o) { prev=parseFloat(val); val='0'; op=o; }
+function parseNum(s){ return parseFloat(String(s).replace(',', '.')); }
+function num(n) {
+  // Разрешаем только одну запятую/точку в числе
+  if ((n === ',' || n === '.') && (val.indexOf(',') !== -1 || val.indexOf('.') !== -1)) return;
+  if(val==='0'||val==='Error') val=n==='.'||n===','?'0,':n; else val+=n;
+  document.getElementById('calcDisplay').value=val;
+}
+function setOp(o) { prev=parseNum(val); val='0'; op=o; }
 function calculate() {
   if(op&&prev!=null){
-    const cur=parseFloat(val); let r;
+    const cur=parseNum(val); let r;
     switch(op){case'+':r=prev+cur;break;case'-':r=prev-cur;break;case'*':r=prev*cur;break;case'/':r=cur!==0?prev/cur:'Error';break;}
-    val=r.toString(); op=null; prev=null; document.getElementById('calcDisplay').value=val;
+    val=(typeof r === 'number' ? r.toString().replace('.', ',') : r); op=null; prev=null; document.getElementById('calcDisplay').value=val;
   }
 }
 function clr() { val='0'; prev=null; op=null; document.getElementById('calcDisplay').value='0'; }
 function addToTotal() {
   calculate();
-  const n = parseFloat(val);
+  const n = parseNum(val);
   if(!isNaN(n) && n !== 0) { addedValues.push(n); renderValuesList(); }
   val='0'; document.getElementById('calcDisplay').value='0';
 }
+function fmt(n){ return String(n).replace('.', ','); }
 function renderValuesList() {
   const list = document.getElementById('addedValuesList');
   if (!addedValues.length) { list.style.display='none'; list.innerHTML=''; total=0; }
   else {
     list.style.display='block';
     list.innerHTML = addedValues.map((v,i) =>
-      `<div class="val-item"><span>${v}</span><button class="del-val" onclick="removeValue(${i})">×</button></div>`
+      `<div class="val-item"><span>${fmt(v)}</span><button class="del-val" onclick="removeValue(${i})">×</button></div>`
     ).join('');
     total = Math.round(addedValues.reduce((a,b)=>a+b,0)*1000)/1000;
   }
-  document.getElementById('total').innerText = total;
+  document.getElementById('total').innerText = fmt(total);
 }
 function removeValue(i) { addedValues.splice(i,1); renderValuesList(); }
 
 async function saveResult() {
-  let n = addedValues.length ? total : parseFloat(val);
+  let n = addedValues.length ? total : parseNum(val);
   if(isNaN(n)||n<=0){alert('Введите корректное число');return;}
   const fd = new FormData();
   fd.append('product_id', curProdId);
