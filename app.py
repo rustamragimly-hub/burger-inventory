@@ -2934,7 +2934,7 @@ async function copyCred(id) {
 }
 
 async function copyAllCreds(email, login, pwd) {
-  const text = 'Email: ' + email + '\nЛогин: ' + login + '\nПароль: ' + pwd;
+  const text = 'Email: ' + email + '\\nЛогин: ' + login + '\\nПароль: ' + pwd;
   const ok = await copyToClipboard(text);
   adminToast(ok ? '✓ Все данные скопированы' : 'Не удалось скопировать', ok ? 'success' : 'error');
 }
