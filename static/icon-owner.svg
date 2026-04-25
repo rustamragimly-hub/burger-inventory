@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="og" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#a855f7"/>
+      <stop offset="100%" stop-color="#7c6cf0"/>
+    </linearGradient>
+    <linearGradient id="bar" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.9"/>
+      <stop offset="100%" stop-color="#ffffff"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#og)"/>
+  <!-- Baseline -->
+  <rect x="118" y="386" width="276" height="6" rx="3" fill="#ffffff" opacity="0.45"/>
+  <!-- Bars (ascending) -->
+  <rect x="138" y="288" width="62" height="98" rx="14" fill="url(#bar)" opacity="0.85"/>
+  <rect x="222" y="232" width="62" height="154" rx="14" fill="url(#bar)" opacity="0.92"/>
+  <rect x="306" y="158" width="62" height="228" rx="14" fill="url(#bar)"/>
+  <!-- Trend line dots -->
+  <circle cx="169" cy="280" r="9" fill="#ffffff"/>
+  <circle cx="253" cy="222" r="9" fill="#ffffff"/>
+  <circle cx="337" cy="148" r="9" fill="#ffffff"/>
+  <!-- Trend line -->
+  <path d="M169 280 L253 222 L337 148" stroke="#ffffff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" fill="none" opacity="0.85"/>
+  <!-- Sparkle -->
+  <g transform="translate(380 110)">
+    <path d="M0 -22 L6 -6 L22 0 L6 6 L0 22 L-6 6 L-22 0 L-6 -6 Z" fill="#ffffff"/>
+    <circle cx="0" cy="0" r="4" fill="url(#og)"/>
+  </g>
+</svg>

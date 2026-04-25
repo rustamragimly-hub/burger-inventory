@@ -1,0 +1,15 @@
+{
+  "name": "Calcio Owner — Управление",
+  "short_name": "Calcio Owner",
+  "description": "Панель владельца Calcio: управление компаниями и метрики",
+  "start_url": "/owner",
+  "scope": "/owner",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0f0a1f",
+  "theme_color": "#7c6cf0",
+  "icons": [
+    {"src": "/static/icon-owner-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable"},
+    {"src": "/static/icon-owner-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable"}
+  ]
+}

@@ -26,6 +26,7 @@ from config import Config
 from models import (
     db, Organization, User, Location, OwnerUser, LoginAttempt,
     Category, Product, ProductNorm, Revision, RevisionItem,
+    OwnerAuditLog, SupportTicket, SupportTicketReply, CatalogProduct,
 )
 
 # ============== ИНИЦИАЛИЗАЦИЯ ==============
@@ -46,6 +47,9 @@ login_manager.session_protection = None
 from werkzeug.middleware.proxy_fix import ProxyFix
 app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 
+# Время запуска приложения (для health-check uptime)
+_APP_STARTED_AT = datetime.utcnow()
+
 
 _PWA_HEAD = '''
 <link rel="icon" type="image/svg+xml" href="/static/icon.svg">
@@ -58,10 +62,25 @@ _PWA_HEAD = '''
 <meta name="apple-mobile-web-app-title" content="Calcio">
 '''
 
+_OWNER_PWA_HEAD = '''
+<link rel="icon" type="image/svg+xml" href="/static/icon-owner.svg">
+<link rel="apple-touch-icon" href="/static/icon-owner-180.png">
+<link rel="manifest" href="/static/manifest-owner.json">
+<meta name="theme-color" content="#7c6cf0">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Calcio Owner">
+'''
+
 
 @app.context_processor
 def _inject_pwa():
-    return {'pwa_head': _PWA_HEAD}
+    return {
+        'pwa_head': _PWA_HEAD,
+        'owner_pwa_head': _OWNER_PWA_HEAD,
+        'is_impersonating': bool(session.get('impersonating_owner_id')),
+    }
 
 
 @app.template_filter('qty')
@@ -81,6 +100,32 @@ def _qty_fmt(v):
 @app.before_request
 def make_session_permanent():
     session.permanent = True
+
+
+def log_owner_action(action, target_org_id=None, target_user_id=None, details=None):
+    """Записать действие владельца в audit-log. Безопасно: исключения подавляются."""
+    try:
+        owner_id = None
+        try:
+            if hasattr(current_user, 'is_owner') and current_user.is_owner:
+                owner_id = current_user.raw_id
+        except Exception:
+            pass
+        ip = request.headers.get('X-Forwarded-For', request.remote_addr) if request else None
+        if ip and ',' in ip:
+            ip = ip.split(',')[0].strip()
+        entry = OwnerAuditLog(
+            owner_id=owner_id, action=action,
+            target_org_id=target_org_id, target_user_id=target_user_id,
+            details=details, ip_address=ip,
+        )
+        db.session.add(entry)
+        db.session.commit()
+    except Exception as _e:
+        try:
+            db.session.rollback()
+        except Exception:
+            pass
 
 
 # ============== ОБЁРТКИ ДЛЯ FLASK-LOGIN ==============
@@ -1552,6 +1597,72 @@ def create_owner():
     click.echo(f'✔ OwnerUser создан: {email}')
 
 
+# ============== ПОДДЕРЖКА (КЛИЕНТСКАЯ СТОРОНА) ==============
+@app.route('/support', methods=['GET', 'POST'])
+@login_required_user
+def support_page():
+    org = _current_org()
+    if not org:
+        return redirect('/login')
+    user = current_user.user
+    if request.method == 'POST':
+        subject = (request.form.get('subject') or '').strip()
+        body = (request.form.get('body') or '').strip()
+        if not subject or not body:
+            flash('Заполните тему и текст.', 'error')
+            return redirect('/support')
+        t = SupportTicket(
+            org_id=org.id, user_id=user.id if user else None,
+            subject=subject[:300], body=body, status='open',
+        )
+        db.session.add(t)
+        db.session.commit()
+        flash('Тикет создан. Мы ответим в ближайшее время.', 'success')
+        return redirect(f'/support/{t.id}')
+
+    tickets = SupportTicket.query.filter_by(org_id=org.id).order_by(
+        SupportTicket.updated_at.desc()
+    ).limit(50).all()
+    items = []
+    for t in tickets:
+        items.append({
+            'id': t.id, 'subject': t.subject, 'status': t.status,
+            'when': t.updated_at.strftime('%d.%m.%Y %H:%M') if t.updated_at else '—',
+        })
+    return render_template_string(support_list_html, org=org, items=items)
+
+
+@app.route('/support/<int:ticket_id>', methods=['GET', 'POST'])
+@login_required_user
+def support_view(ticket_id):
+    org = _current_org()
+    if not org:
+        return redirect('/login')
+    t = db.session.get(SupportTicket, ticket_id)
+    if not t or t.org_id != org.id:
+        flash('Тикет не найден.', 'error')
+        return redirect('/support')
+    if request.method == 'POST':
+        body = (request.form.get('body') or '').strip()
+        if body and t.status != 'closed':
+            user = current_user.user
+            r = SupportTicketReply(
+                ticket_id=t.id, author_type='user',
+                author_label=user.username if user else 'Клиент',
+                body=body,
+            )
+            db.session.add(r)
+            t.status = 'open'
+            t.updated_at = datetime.utcnow()
+            db.session.commit()
+        return redirect(f'/support/{ticket_id}')
+
+    replies = SupportTicketReply.query.filter_by(ticket_id=t.id).order_by(
+        SupportTicketReply.created_at
+    ).all()
+    return render_template_string(support_view_html, org=org, t=t, replies=replies)
+
+
 # ============== OWNER PANEL ==============
 
 def owner_required(fn):
@@ -1655,6 +1766,66 @@ def owner_dashboard():
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     activity_today = RevisionItem.query.filter(RevisionItem.added_at >= today_start).count()
 
+    # Тоталы по системе
+    total_users = User.query.count()
+    total_products = Product.query.count()
+    total_revisions = Revision.query.filter(Revision.status == 'completed').count()
+
+    # MRR — сумма monthly_price для платящих
+    mrr_q = db.session.query(db.func.coalesce(db.func.sum(Organization.monthly_price), 0)).filter(
+        Organization.plan.in_(('pro', 'business')),
+        Organization.subscription_ends_at > now,
+    ).scalar() or 0
+    mrr = int(mrr_q)
+
+    # Конверсия trial → paid
+    finished_trials_total = Organization.query.filter(
+        (Organization.plan != 'trial') | ((Organization.trial_ends_at != None) & (Organization.trial_ends_at <= now))
+    ).filter(Organization.created_at < now - timedelta(days=14)).count()
+    converted = Organization.query.filter(
+        Organization.plan.in_(('pro', 'business'))
+    ).count()
+    conv_pct = int((converted / finished_trials_total) * 100) if finished_trials_total else 0
+
+    # 30-дневный график регистраций
+    thirty_days_ago = now - timedelta(days=30)
+    signups_q = Organization.query.filter(Organization.created_at >= thirty_days_ago).all()
+    signups_per_day = [0] * 30
+    for o in signups_q:
+        if not o.created_at:
+            continue
+        days_back = (now.date() - o.created_at.date()).days
+        if 0 <= days_back < 30:
+            signups_per_day[29 - days_back] += 1
+
+    # 30-дневный график активности (revision items)
+    activity_q = db.session.query(RevisionItem.added_at).filter(
+        RevisionItem.added_at >= thirty_days_ago
+    ).all()
+    activity_per_day = [0] * 30
+    for (dt,) in activity_q:
+        if not dt:
+            continue
+        days_back = (now.date() - dt.date()).days
+        if 0 <= days_back < 30:
+            activity_per_day[29 - days_back] += 1
+
+    # Алерты: неактивные >14 дней
+    fourteen_days_ago = now - timedelta(days=14)
+    inactive_org_ids = set()
+    for o in Organization.query.all():
+        users = User.query.filter_by(org_id=o.id).all()
+        if not users:
+            continue
+        last_login = max((u.last_login_at for u in users if u.last_login_at), default=None)
+        if not last_login or last_login < fourteen_days_ago:
+            inactive_org_ids.add(o.id)
+
+    inactive_count = len(inactive_org_ids)
+
+    # Открытых тикетов
+    open_tickets = SupportTicket.query.filter_by(status='open').count()
+
     return render_template_string(
         owner_dashboard_html,
         owner_email=current_user.username,
@@ -1665,6 +1836,15 @@ def owner_dashboard():
         expiring_list=expiring_list,
         recent_list=recent_list,
         activity_today=activity_today,
+        total_users=total_users,
+        total_products=total_products,
+        total_revisions=total_revisions,
+        mrr=mrr,
+        conv_pct=conv_pct,
+        signups_per_day=signups_per_day,
+        activity_per_day=activity_per_day,
+        inactive_count=inactive_count,
+        open_tickets=open_tickets,
     )
 
 
@@ -1781,6 +1961,7 @@ def owner_delete_org(org_id):
         return redirect('/owner/orgs')
     name = org.name
     try:
+        log_owner_action('delete_org', target_org_id=org.id, details=f'name={name}, email={org.owner_email}')
         db.session.delete(org)
         db.session.commit()
         flash(f'Компания «{name}» и все её данные удалены.', 'success')
@@ -1788,6 +1969,454 @@ def owner_delete_org(org_id):
         db.session.rollback()
         flash(f'Ошибка удаления: {e}', 'error')
     return redirect('/owner/orgs')
+
+
+# ============== OWNER: ДЕТАЛИ КОМПАНИИ ==============
+@app.route('/owner/orgs/<int:org_id>')
+@owner_required
+def owner_org_detail(org_id):
+    org = db.session.get(Organization, org_id)
+    if not org:
+        flash('Компания не найдена.', 'error')
+        return redirect('/owner/orgs')
+
+    now = datetime.utcnow()
+    users = User.query.filter_by(org_id=org.id).order_by(User.role.desc(), User.username).all()
+    user_rows = []
+    for u in users:
+        user_rows.append({
+            'id': u.id, 'username': u.username, 'email': u.email or '—',
+            'role': u.role,
+            'last_login': u.last_login_at.strftime('%d.%m.%Y %H:%M') if u.last_login_at else 'никогда',
+        })
+
+    locations_count = Location.query.filter_by(org_id=org.id).count()
+    products_count = Product.query.filter_by(org_id=org.id).count()
+    revisions_count = Revision.query.filter_by(org_id=org.id).count()
+
+    seven_days_ago = now - timedelta(days=7)
+    items_7d = db.session.query(db.func.count(RevisionItem.id)).join(Revision).filter(
+        Revision.org_id == org.id, RevisionItem.added_at >= seven_days_ago
+    ).scalar() or 0
+
+    # Sparkline активности 14 дней
+    fourteen_days_ago = now - timedelta(days=14)
+    spark_q = db.session.query(RevisionItem.added_at).join(Revision).filter(
+        Revision.org_id == org.id, RevisionItem.added_at >= fourteen_days_ago
+    ).all()
+    spark = [0] * 14
+    for (dt,) in spark_q:
+        if dt:
+            d = (now.date() - dt.date()).days
+            if 0 <= d < 14:
+                spark[13 - d] += 1
+
+    if org.plan == 'trial' and org.trial_ends_at:
+        ends_str = org.trial_ends_at.strftime('%d.%m.%Y')
+    elif org.plan in ('pro', 'business') and org.subscription_ends_at:
+        ends_str = org.subscription_ends_at.strftime('%d.%m.%Y')
+    else:
+        ends_str = '—'
+
+    features = org.features or {}
+    return render_template_string(
+        owner_org_detail_html,
+        owner_email=current_user.username,
+        org=org, ends_str=ends_str,
+        user_rows=user_rows,
+        locations_count=locations_count,
+        products_count=products_count,
+        revisions_count=revisions_count,
+        items_7d=items_7d, spark=spark,
+        features=features,
+    )
+
+
+@app.route('/owner/orgs/<int:org_id>/features', methods=['POST'])
+@owner_required
+def owner_set_features(org_id):
+    org = db.session.get(Organization, org_id)
+    if not org:
+        flash('Компания не найдена.', 'error')
+        return redirect('/owner/orgs')
+    feats = {
+        'excel_export': request.form.get('excel_export') == 'on',
+        'multi_location': request.form.get('multi_location') == 'on',
+        'history': request.form.get('history') == 'on',
+        'unlimited_users': request.form.get('unlimited_users') == 'on',
+    }
+    org.features = feats
+    try:
+        log_owner_action('set_features', target_org_id=org.id, details=str(feats))
+        db.session.commit()
+        flash('Feature-флаги обновлены.', 'success')
+    except Exception as e:
+        db.session.rollback()
+        flash(f'Ошибка: {e}', 'error')
+    return redirect(f'/owner/orgs/{org_id}')
+
+
+@app.route('/owner/orgs/<int:org_id>/price', methods=['POST'])
+@owner_required
+def owner_set_price(org_id):
+    org = db.session.get(Organization, org_id)
+    if not org:
+        flash('Компания не найдена.', 'error')
+        return redirect('/owner/orgs')
+    try:
+        price = int(request.form.get('monthly_price') or 0)
+    except (TypeError, ValueError):
+        price = 0
+    org.monthly_price = max(0, price)
+    try:
+        log_owner_action('set_price', target_org_id=org.id, details=f'price={price}')
+        db.session.commit()
+        flash(f'Цена подписки: {price}₽/мес.', 'success')
+    except Exception as e:
+        db.session.rollback()
+        flash(f'Ошибка: {e}', 'error')
+    return redirect(f'/owner/orgs/{org_id}')
+
+
+# ============== OWNER: ИМПЕРСONATION ==============
+@app.route('/owner/orgs/<int:org_id>/impersonate', methods=['POST'])
+@owner_required
+def owner_impersonate(org_id):
+    org = db.session.get(Organization, org_id)
+    if not org:
+        flash('Компания не найдена.', 'error')
+        return redirect('/owner/orgs')
+    admin_user = User.query.filter_by(org_id=org.id, role='admin').first()
+    if not admin_user:
+        flash('У компании нет админа — нельзя войти.', 'error')
+        return redirect(f'/owner/orgs/{org_id}')
+
+    log_owner_action(
+        'impersonate_start', target_org_id=org.id, target_user_id=admin_user.id,
+        details=f'as={admin_user.username}'
+    )
+    owner_id_remember = current_user.raw_id
+    logout_user()
+    session['impersonating_owner_id'] = owner_id_remember
+    session['impersonating_org_id'] = org.id
+    login_user(AuthUser(admin_user, 'user'), remember=True)
+    flash(f'Вы вошли как admin компании «{org.name}». Нажмите «Вернуться» в шапке, чтобы выйти.', 'success')
+    return redirect('/admin')
+
+
+@app.route('/owner/stop_impersonate')
+def owner_stop_impersonate():
+    owner_id = session.pop('impersonating_owner_id', None)
+    org_id = session.pop('impersonating_org_id', None)
+    if not owner_id:
+        return redirect('/')
+    owner = db.session.get(OwnerUser, owner_id)
+    if not owner:
+        return redirect('/owner/login')
+    log_owner_action('impersonate_stop', target_org_id=org_id, details=f'owner_id={owner_id}')
+    logout_user()
+    login_user(AuthUser(owner, 'owner'), remember=True)
+    flash('Вы вернулись в панель владельца.', 'success')
+    return redirect('/owner')
+
+
+# ============== OWNER: АУДИТ ==============
+@app.route('/owner/audit')
+@owner_required
+def owner_audit():
+    rows = OwnerAuditLog.query.order_by(OwnerAuditLog.created_at.desc()).limit(200).all()
+    org_names = {o.id: o.name for o in Organization.query.all()}
+    log_rows = []
+    for r in rows:
+        log_rows.append({
+            'when': r.created_at.strftime('%d.%m.%Y %H:%M:%S') if r.created_at else '—',
+            'action': r.action,
+            'org': org_names.get(r.target_org_id, '—') if r.target_org_id else '—',
+            'details': (r.details or '')[:200],
+            'ip': r.ip_address or '—',
+        })
+    return render_template_string(
+        owner_audit_html,
+        owner_email=current_user.username,
+        log_rows=log_rows,
+    )
+
+
+# ============== OWNER: АЛЕРТЫ ==============
+@app.route('/owner/alerts')
+@owner_required
+def owner_alerts():
+    now = datetime.utcnow()
+    in_3 = now + timedelta(days=3)
+    in_7 = now + timedelta(days=7)
+    fourteen_ago = now - timedelta(days=14)
+    thirty_ago = now - timedelta(days=30)
+
+    expiring_3 = []
+    expiring_7 = []
+    for org in Organization.query.filter(Organization.plan == 'trial', Organization.trial_ends_at > now).all():
+        days = (org.trial_ends_at - now).days
+        item = {'id': org.id, 'name': org.name, 'email': org.owner_email, 'days': max(0, days)}
+        if org.trial_ends_at <= in_3:
+            expiring_3.append(item)
+        elif org.trial_ends_at <= in_7:
+            expiring_7.append(item)
+
+    inactive = []
+    for org in Organization.query.all():
+        users = User.query.filter_by(org_id=org.id).all()
+        if not users:
+            continue
+        last = max((u.last_login_at for u in users if u.last_login_at), default=None)
+        if not last:
+            inactive.append({'id': org.id, 'name': org.name, 'email': org.owner_email, 'last': 'никогда'})
+        elif last < thirty_ago:
+            inactive.append({'id': org.id, 'name': org.name, 'email': org.owner_email,
+                             'last': last.strftime('%d.%m.%Y'), 'churn_risk': True})
+        elif last < fourteen_ago:
+            inactive.append({'id': org.id, 'name': org.name, 'email': org.owner_email,
+                             'last': last.strftime('%d.%m.%Y'), 'churn_risk': False})
+
+    paid_expiring = []
+    for org in Organization.query.filter(
+        Organization.plan.in_(('pro', 'business')),
+        Organization.subscription_ends_at != None,
+        Organization.subscription_ends_at > now,
+        Organization.subscription_ends_at <= in_7,
+    ).all():
+        days = (org.subscription_ends_at - now).days
+        paid_expiring.append({'id': org.id, 'name': org.name, 'email': org.owner_email, 'days': max(0, days)})
+
+    return render_template_string(
+        owner_alerts_html, owner_email=current_user.username,
+        expiring_3=expiring_3, expiring_7=expiring_7,
+        inactive=inactive, paid_expiring=paid_expiring,
+    )
+
+
+# ============== OWNER: РАССЫЛКА ==============
+@app.route('/owner/broadcast', methods=['GET', 'POST'])
+@owner_required
+def owner_broadcast():
+    sent = None
+    if request.method == 'POST':
+        subject = (request.form.get('subject') or '').strip()
+        body = (request.form.get('body') or '').strip()
+        audience = request.form.get('audience') or 'all'
+        if not subject or not body:
+            flash('Тема и текст обязательны.', 'error')
+            return redirect('/owner/broadcast')
+
+        now = datetime.utcnow()
+        q = Organization.query
+        if audience == 'trial':
+            q = q.filter(Organization.plan == 'trial', Organization.trial_ends_at > now)
+        elif audience == 'paid':
+            q = q.filter(Organization.plan.in_(('pro', 'business')))
+        elif audience == 'inactive14':
+            fourteen_ago = now - timedelta(days=14)
+            inactive_ids = []
+            for org in Organization.query.all():
+                last = db.session.query(db.func.max(User.last_login_at)).filter(User.org_id == org.id).scalar()
+                if not last or last < fourteen_ago:
+                    inactive_ids.append(org.id)
+            q = q.filter(Organization.id.in_(inactive_ids))
+        recipients = q.all()
+
+        log_owner_action('broadcast', details=f'audience={audience} count={len(recipients)} subject={subject[:80]}')
+        sent = len(recipients)
+        flash(f'Сообщение поставлено в очередь для {sent} компаний. (Реальная отправка email подключается отдельно.)', 'success')
+        return redirect('/owner/broadcast')
+    return render_template_string(owner_broadcast_html, owner_email=current_user.username)
+
+
+# ============== OWNER: BACKUP ==============
+@app.route('/owner/backup')
+@owner_required
+def owner_backup():
+    return render_template_string(owner_backup_html, owner_email=current_user.username)
+
+
+@app.route('/owner/backup/download')
+@owner_required
+def owner_backup_download():
+    import json, zipfile
+    log_owner_action('backup_download')
+    buf = BytesIO()
+    with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
+        for model_cls, fname in [
+            (Organization, 'organizations.json'), (User, 'users.json'),
+            (Location, 'locations.json'), (Category, 'categories.json'),
+            (Product, 'products.json'), (ProductNorm, 'product_norms.json'),
+            (Revision, 'revisions.json'), (RevisionItem, 'revision_items.json'),
+            (CatalogProduct, 'catalog_products.json'),
+            (SupportTicket, 'support_tickets.json'),
+            (OwnerAuditLog, 'owner_audit_log.json'),
+        ]:
+            rows = []
+            for r in model_cls.query.all():
+                d = {}
+                for col in r.__table__.columns:
+                    val = getattr(r, col.name)
+                    if isinstance(val, datetime):
+                        val = val.isoformat()
+                    elif isinstance(val, (bytes, memoryview)):
+                        val = f'<binary {len(bytes(val))} bytes>'
+                    d[col.name] = val
+                rows.append(d)
+            zf.writestr(fname, json.dumps(rows, ensure_ascii=False, indent=2, default=str))
+    buf.seek(0)
+    fname = f'calcio_backup_{datetime.utcnow().strftime("%Y%m%d_%H%M%S")}.zip'
+    return send_file(buf, as_attachment=True, download_name=fname, mimetype='application/zip')
+
+
+# ============== OWNER: ТИКЕТЫ ==============
+@app.route('/owner/tickets')
+@owner_required
+def owner_tickets():
+    rows = SupportTicket.query.order_by(
+        SupportTicket.status.asc(), SupportTicket.updated_at.desc()
+    ).limit(200).all()
+    org_names = {o.id: o.name for o in Organization.query.all()}
+    items = []
+    for t in rows:
+        items.append({
+            'id': t.id, 'subject': t.subject, 'status': t.status,
+            'org_name': org_names.get(t.org_id, '—'),
+            'when': t.updated_at.strftime('%d.%m.%Y %H:%M') if t.updated_at else '—',
+        })
+    return render_template_string(owner_tickets_html, owner_email=current_user.username, items=items)
+
+
+@app.route('/owner/tickets/<int:ticket_id>', methods=['GET', 'POST'])
+@owner_required
+def owner_ticket_view(ticket_id):
+    t = db.session.get(SupportTicket, ticket_id)
+    if not t:
+        flash('Тикет не найден.', 'error')
+        return redirect('/owner/tickets')
+    if request.method == 'POST':
+        body = (request.form.get('body') or '').strip()
+        action = request.form.get('action') or 'reply'
+        if body:
+            r = SupportTicketReply(
+                ticket_id=t.id, author_type='owner',
+                author_label='Владелец', body=body,
+            )
+            db.session.add(r)
+            t.status = 'answered'
+            t.updated_at = datetime.utcnow()
+            log_owner_action('ticket_reply', target_org_id=t.org_id, details=f'ticket={t.id}')
+            db.session.commit()
+        if action == 'close':
+            t.status = 'closed'
+            t.updated_at = datetime.utcnow()
+            log_owner_action('ticket_close', target_org_id=t.org_id, details=f'ticket={t.id}')
+            db.session.commit()
+        return redirect(f'/owner/tickets/{ticket_id}')
+
+    org = db.session.get(Organization, t.org_id)
+    replies = SupportTicketReply.query.filter_by(ticket_id=t.id).order_by(SupportTicketReply.created_at).all()
+    return render_template_string(
+        owner_ticket_view_html, owner_email=current_user.username,
+        t=t, org=org, replies=replies,
+    )
+
+
+# ============== OWNER: КАТАЛОГ ==============
+@app.route('/owner/catalog', methods=['GET', 'POST'])
+@owner_required
+def owner_catalog():
+    if request.method == 'POST':
+        name = (request.form.get('name') or '').strip()
+        unit = (request.form.get('unit') or 'шт').strip()
+        category = (request.form.get('category') or '').strip()
+        code = (request.form.get('code') or '').strip()
+        if name:
+            cp = CatalogProduct(name=name, unit=unit, category_name=category or None, code=code or None)
+            db.session.add(cp)
+            log_owner_action('catalog_add', details=f'name={name}')
+            db.session.commit()
+            flash(f'Добавлено: {name}', 'success')
+        return redirect('/owner/catalog')
+
+    rows = CatalogProduct.query.order_by(CatalogProduct.category_name, CatalogProduct.name).all()
+    return render_template_string(owner_catalog_html, owner_email=current_user.username, rows=rows)
+
+
+@app.route('/owner/catalog/<int:cp_id>/delete', methods=['POST'])
+@owner_required
+def owner_catalog_delete(cp_id):
+    cp = db.session.get(CatalogProduct, cp_id)
+    if cp:
+        log_owner_action('catalog_delete', details=f'name={cp.name}')
+        db.session.delete(cp)
+        db.session.commit()
+    return redirect('/owner/catalog')
+
+
+# ============== OWNER: HEALTH ==============
+@app.route('/owner/health')
+@owner_required
+def owner_health():
+    import time as _time
+    health = {'db_ok': False, 'db_latency_ms': None, 'db_size': '—',
+              'orgs': 0, 'users': 0, 'products': 0, 'revisions': 0, 'items': 0,
+              'app_started': _APP_STARTED_AT.strftime('%d.%m.%Y %H:%M:%S'),
+              'uptime': str(datetime.utcnow() - _APP_STARTED_AT).split('.')[0]}
+    try:
+        t0 = _time.time()
+        db.session.execute(db.text('SELECT 1')).scalar()
+        health['db_latency_ms'] = round((_time.time() - t0) * 1000, 1)
+        health['db_ok'] = True
+    except Exception:
+        pass
+    try:
+        size = db.session.execute(db.text("SELECT pg_size_pretty(pg_database_size(current_database()))")).scalar()
+        health['db_size'] = size or '—'
+    except Exception:
+        pass
+    health['orgs'] = Organization.query.count()
+    health['users'] = User.query.count()
+    health['products'] = Product.query.count()
+    health['revisions'] = Revision.query.count()
+    health['items'] = RevisionItem.query.count()
+    return render_template_string(owner_health_html, owner_email=current_user.username, h=health)
+
+
+# ============== OWNER: SQL КОНСОЛЬ ==============
+@app.route('/owner/sql', methods=['GET', 'POST'])
+@owner_required
+def owner_sql():
+    result_cols, result_rows, error, query, executed = [], [], None, '', False
+    if request.method == 'POST':
+        query = (request.form.get('query') or '').strip()
+        executed = True
+        # Защита: разрешаем только SELECT (default). Для DDL/DML — явное подтверждение.
+        allow_write = request.form.get('allow_write') == 'on'
+        first_word = query.lstrip().split(None, 1)[0].lower() if query else ''
+        if not allow_write and first_word and first_word != 'select':
+            error = 'Разрешены только SELECT-запросы. Для других включите чекбокс «Разрешить запись».'
+        elif query:
+            try:
+                log_owner_action('sql_exec', details=f'write={allow_write} query={query[:300]}')
+                with db.engine.connect() as conn:
+                    res = conn.execute(db.text(query))
+                    if res.returns_rows:
+                        result_cols = list(res.keys())
+                        result_rows = [list(r) for r in res.fetchmany(500)]
+                    else:
+                        if allow_write:
+                            conn.commit()
+                        result_cols = ['result']
+                        result_rows = [[f'OK (rowcount={res.rowcount})']]
+            except Exception as e:
+                error = str(e)
+    return render_template_string(
+        owner_sql_html, owner_email=current_user.username,
+        query=query, result_cols=result_cols, result_rows=result_rows,
+        error=error, executed=executed,
+    )
 
 
 # ============== HTML ШАБЛОНЫ ==============
@@ -2407,6 +3036,13 @@ hr.soft { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 
 <div class="blob blob-1"></div>
 <div class="blob blob-2"></div>
 
+{% if is_impersonating %}
+<div style="background:linear-gradient(135deg,#a855f7,#7c6cf0);padding:10px 16px;display:flex;align-items:center;justify-content:space-between;font-size:13px;font-weight:600;gap:10px;flex-wrap:wrap;">
+  <span>🎭 Вы вошли как admin компании <b>{{ org.name }}</b> от имени владельца. Все действия записываются в аудит.</span>
+  <a href="/owner/stop_impersonate" style="background:rgba(255,255,255,0.2);color:white;padding:5px 12px;border-radius:8px;text-decoration:none;font-weight:700;">← Вернуться в Owner</a>
+</div>
+{% endif %}
+
 <div class="header">
   <div class="brand">
     <div class="name">👨‍💼 {{ org.name }}</div>
@@ -2414,6 +3050,7 @@ hr.soft { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 
   </div>
   <div class="actions">
     <a class="btn" href="/revision">📊 Ревизия</a>
+    <a class="btn" href="/support" style="background:rgba(124,108,240,0.18);border-color:rgba(124,108,240,0.4);color:#c4b5fd;">🎫 Поддержка</a>
     <a class="btn btn-danger" href="/logout">Выйти</a>
   </div>
 </div>
@@ -3435,6 +4072,177 @@ function closeSentModal() { document.getElementById('sentModal').classList.remov
 </html>'''
 
 
+# ============== ПОДДЕРЖКА: КЛИЕНТСКИЕ ШАБЛОНЫ ==============
+_SUPPORT_CSS = '''
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; margin: 0; padding: 0; }
+body {
+  font-family: 'Outfit', sans-serif;
+  background: linear-gradient(135deg, #13111C 0%, #1d1635 50%, #231b50 100%);
+  background-attachment: fixed; min-height: 100vh; color: white; padding-bottom: 40px;
+}
+.blob { position: fixed; border-radius: 50%; filter: blur(80px); opacity: 0.25; pointer-events: none; z-index: 0; }
+.blob-1 { width: 380px; height: 380px; background: radial-gradient(circle, #7c6cf0, #a855f7); top: -100px; left: -80px; }
+.blob-2 { width: 320px; height: 320px; background: radial-gradient(circle, #a855f7, #6d28d9); bottom: -80px; right: -80px; }
+.s-header {
+  position: sticky; top: 0; z-index: 20;
+  background: rgba(19,17,28,0.75); backdrop-filter: blur(20px);
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+  padding: 14px 20px; display: flex; align-items: center; justify-content: space-between;
+}
+.s-header .name { font-weight: 700; font-size: 16px; }
+.s-header .sub { font-size: 11px; color: rgba(255,255,255,0.5); text-transform: uppercase; letter-spacing: 0.6px; }
+.s-back { background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.12); color: white; padding: 8px 14px; border-radius: 10px; font-size: 13px; font-weight: 600; text-decoration: none; }
+.s-back:hover { background: rgba(255,255,255,0.12); }
+.container { max-width: 760px; margin: 22px auto; padding: 0 16px; position: relative; z-index: 1; }
+.card { background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.12); border-radius: 18px; padding: 20px; margin-bottom: 14px; backdrop-filter: blur(20px); }
+.card h1 { font-size: 20px; font-weight: 700; margin-bottom: 8px; }
+.card h2 { font-size: 16px; font-weight: 700; margin-bottom: 10px; }
+.muted { color: rgba(255,255,255,0.55); font-size: 13px; }
+.input, .area { width: 100%; background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.12); border-radius: 12px; color: white; padding: 11px 14px; font-family: 'Outfit', sans-serif; font-size: 14px; margin-bottom: 10px; }
+.area { min-height: 140px; resize: vertical; }
+.input:focus, .area:focus { outline: none; border-color: rgba(124,108,240,0.6); }
+.btn-primary { background: linear-gradient(135deg, #7c6cf0, #a855f7); border: none; color: white; padding: 12px 18px; border-radius: 12px; font-weight: 600; font-family: 'Outfit', sans-serif; font-size: 14px; cursor: pointer; }
+.btn-primary:hover { filter: brightness(1.08); }
+.flash { padding: 12px 14px; border-radius: 12px; margin-bottom: 12px; font-size: 13px; }
+.flash-success { background: rgba(34,197,94,0.14); color: #86efac; border: 1px solid rgba(34,197,94,0.3); }
+.flash-error { background: rgba(239,68,68,0.14); color: #fca5a5; border: 1px solid rgba(239,68,68,0.3); }
+.tlist a { display: flex; justify-content: space-between; align-items: center; padding: 14px 16px; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 12px; margin-bottom: 8px; text-decoration: none; color: white; }
+.tlist a:hover { background: rgba(255,255,255,0.08); }
+.tstat { font-size: 11px; font-weight: 700; padding: 3px 10px; border-radius: 999px; text-transform: uppercase; letter-spacing: 0.5px; }
+.tstat-open { background: rgba(239,68,68,0.2); color: #fca5a5; }
+.tstat-answered { background: rgba(124,108,240,0.2); color: #a78bfa; }
+.tstat-closed { background: rgba(100,116,139,0.2); color: #94a3b8; }
+.empty { padding: 40px 20px; text-align: center; color: rgba(255,255,255,0.5); border: 1px dashed rgba(255,255,255,0.12); border-radius: 14px; }
+.empty .ico { font-size: 42px; opacity: 0.55; margin-bottom: 10px; }
+.reply { padding: 14px 16px; border-radius: 14px; margin-bottom: 10px; }
+.reply-mine { background: rgba(16,185,129,0.08); border-left: 3px solid #10b981; }
+.reply-them { background: rgba(168,85,247,0.08); border-left: 3px solid #a855f7; }
+.reply-meta { font-size: 11px; color: rgba(255,255,255,0.55); margin-bottom: 6px; }
+.reply-body { white-space: pre-wrap; font-size: 14px; line-height: 1.55; }
+'''
+
+
+support_list_html = '''<!DOCTYPE html>
+<html lang="ru"><head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Поддержка — {{ org.name }}</title>
+{{ pwa_head|safe }}
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
+<style>''' + _SUPPORT_CSS + '''</style>
+</head><body>
+<div class="blob blob-1"></div>
+<div class="blob blob-2"></div>
+
+<div class="s-header">
+  <div>
+    <div class="name">🎫 Поддержка</div>
+    <div class="sub">{{ org.name }}</div>
+  </div>
+  <a class="s-back" href="/admin">← В админ-панель</a>
+</div>
+
+<div class="container">
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for cat, msg in messages %}
+      <div class="flash flash-{{ cat }}">{{ msg }}</div>
+    {% endfor %}
+  {% endwith %}
+
+  <div class="card">
+    <h1>Создать обращение</h1>
+    <p class="muted" style="margin-bottom:14px;">Опишите проблему или вопрос — владелец Calcio ответит лично.</p>
+    <form method="post">
+      <input class="input" type="text" name="subject" placeholder="Тема обращения" required maxlength="300">
+      <textarea class="area" name="body" placeholder="Подробное описание..." required></textarea>
+      <button class="btn-primary" type="submit">📨 Отправить</button>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2>Ваши обращения</h2>
+    {% if items %}
+      <div class="tlist" style="margin-top:12px;">
+      {% for t in items %}
+        <a href="/support/{{ t.id }}">
+          <div style="flex:1;min-width:0;">
+            <div style="font-weight:600;">{{ t.subject }}</div>
+            <div class="muted" style="font-size:12px;">обновлено {{ t.when }}</div>
+          </div>
+          <span class="tstat tstat-{{ t.status }}">{{ t.status }}</span>
+        </a>
+      {% endfor %}
+      </div>
+    {% else %}
+      <div class="empty">
+        <div class="ico">📭</div>
+        Здесь появятся ваши обращения. Создайте первое выше.
+      </div>
+    {% endif %}
+  </div>
+
+</div>
+</body></html>'''
+
+
+support_view_html = '''<!DOCTYPE html>
+<html lang="ru"><head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{ t.subject }} — Поддержка</title>
+{{ pwa_head|safe }}
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
+<style>''' + _SUPPORT_CSS + '''</style>
+</head><body>
+<div class="blob blob-1"></div>
+<div class="blob blob-2"></div>
+
+<div class="s-header">
+  <div>
+    <div class="name">🎫 Тикет #{{ t.id }}</div>
+    <div class="sub">{{ org.name }}</div>
+  </div>
+  <a class="s-back" href="/support">← К списку</a>
+</div>
+
+<div class="container">
+
+  <div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap;">
+      <h1 style="flex:1;min-width:0;">{{ t.subject }}</h1>
+      <span class="tstat tstat-{{ t.status }}">{{ t.status }}</span>
+    </div>
+    <div class="muted" style="margin-top:6px;">Создано {{ t.created_at.strftime('%d.%m.%Y %H:%M') if t.created_at else '' }}</div>
+    <div style="margin-top:16px;white-space:pre-wrap;font-size:14px;line-height:1.55;color:rgba(255,255,255,0.9);">{{ t.body }}</div>
+  </div>
+
+  {% for r in replies %}
+  <div class="reply {{ 'reply-mine' if r.author_type == 'user' else 'reply-them' }}">
+    <div class="reply-meta">
+      <b>{{ r.author_label or ('Вы' if r.author_type == 'user' else 'Поддержка') }}</b>
+      · {{ r.created_at.strftime('%d.%m.%Y %H:%M') if r.created_at else '' }}
+    </div>
+    <div class="reply-body">{{ r.body }}</div>
+  </div>
+  {% endfor %}
+
+  {% if t.status != 'closed' %}
+  <div class="card">
+    <h2>Дополнить</h2>
+    <form method="post">
+      <textarea class="area" name="body" placeholder="Добавить детали..." required></textarea>
+      <button class="btn-primary" type="submit">💬 Отправить</button>
+    </form>
+  </div>
+  {% else %}
+    <div class="empty">Тикет закрыт. Если вопрос остался — создайте новый.</div>
+  {% endif %}
+
+</div>
+</body></html>'''
+
+
 # ============== СТАРЫЕ ШАБЛОНЫ (для следующих фаз миграции) ==============
 # Сохранены как есть — НЕ используются до миграции /admin и /revision на БД.
 
@@ -3608,6 +4416,53 @@ body {
 .mobile-card .org-email { font-size: 12px; color: rgba(255,255,255,0.5); margin-bottom: 10px; }
 .mobile-card .details { font-size: 12px; color: rgba(255,255,255,0.6); margin-bottom: 8px; display: flex; gap: 12px; flex-wrap: wrap; }
 .mobile-card .actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.owner-nav { flex-wrap: wrap; row-gap: 6px; }
+.metrics-grid-8 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 24px; }
+@media(max-width: 768px) { .metrics-grid-8 { grid-template-columns: repeat(2, 1fr); } }
+.metric-trend { font-size: 11px; color: #6ee7b7; margin-top: 4px; font-weight: 600; }
+.metric-num.small { font-size: 24px; }
+.charts-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 20px; }
+@media(max-width: 900px) { .charts-grid { grid-template-columns: 1fr; } }
+.chart-title { font-size: 13px; color: rgba(255,255,255,0.7); margin-bottom: 8px; font-weight: 600; }
+.chart-total { font-size: 24px; font-weight: 700; color: #fff; margin-bottom: 8px; }
+.spark { display: block; width: 100%; height: 60px; }
+.alert-section { background: rgba(239,68,68,0.07); border: 1px solid rgba(239,68,68,0.2); border-radius: 14px; padding: 14px 16px; margin-bottom: 12px; }
+.alert-section.warn { background: rgba(251,146,60,0.07); border-color: rgba(251,146,60,0.2); }
+.alert-section.info { background: rgba(59,130,246,0.07); border-color: rgba(59,130,246,0.2); }
+.alert-section h3 { font-size: 14px; margin-bottom: 8px; color: rgba(255,255,255,0.85); }
+.alert-row { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid rgba(255,255,255,0.05); font-size: 13px; }
+.alert-row:last-child { border-bottom: none; }
+.audit-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.audit-table th { text-align: left; padding: 8px 10px; color: rgba(255,255,255,0.4); font-size: 10px; text-transform: uppercase; letter-spacing: 0.6px; border-bottom: 1px solid rgba(255,255,255,0.08); }
+.audit-table td { padding: 8px 10px; border-bottom: 1px solid rgba(255,255,255,0.05); }
+.audit-table .action-pill { display: inline-block; padding: 2px 8px; border-radius: 6px; font-size: 11px; font-weight: 600; background: rgba(124,108,240,0.2); color: #a78bfa; }
+.ticket-row { display: flex; justify-content: space-between; align-items: center; padding: 14px 16px; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 12px; margin-bottom: 8px; cursor: pointer; text-decoration: none; color: inherit; }
+.ticket-row:hover { background: rgba(255,255,255,0.07); }
+.ticket-status { font-size: 11px; font-weight: 700; padding: 3px 10px; border-radius: 999px; text-transform: uppercase; letter-spacing: 0.5px; }
+.status-open { background: rgba(239,68,68,0.2); color: #fca5a5; }
+.status-answered { background: rgba(124,108,240,0.2); color: #a78bfa; }
+.status-closed { background: rgba(100,116,139,0.2); color: #94a3b8; }
+.feature-toggle { display: flex; align-items: center; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid rgba(255,255,255,0.06); }
+.feature-toggle:last-child { border-bottom: none; }
+.toggle-switch { position: relative; width: 44px; height: 24px; }
+.toggle-switch input { opacity: 0; width: 0; height: 0; }
+.toggle-slider { position: absolute; cursor: pointer; inset: 0; background: rgba(255,255,255,0.15); border-radius: 24px; transition: .3s; }
+.toggle-slider:before { content: ""; position: absolute; height: 18px; width: 18px; left: 3px; bottom: 3px; background: white; border-radius: 50%; transition: .3s; }
+input:checked + .toggle-slider { background: #7c6cf0; }
+input:checked + .toggle-slider:before { transform: translateX(20px); }
+.input-row { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; }
+.input-row input, .input-row select, .input-row textarea {
+    background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 10px; color: white; padding: 10px 12px;
+    font-family: 'Outfit', sans-serif; font-size: 14px;
+}
+.input-row input:focus, .input-row select:focus, .input-row textarea:focus { outline: none; border-color: rgba(124,108,240,0.5); }
+.input-row .grow { flex: 1; }
+textarea.broadcast-area { width: 100%; min-height: 200px; background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.12); border-radius: 12px; color: white; padding: 12px 14px; font-family: 'Outfit', sans-serif; font-size: 14px; resize: vertical; }
+textarea.broadcast-area:focus { outline: none; border-color: rgba(124,108,240,0.5); }
+.btn-primary-sm { background: linear-gradient(135deg, #7c6cf0, #a855f7); color: white; border: none; padding: 10px 20px; border-radius: 10px; font-family: 'Outfit', sans-serif; font-size: 14px; font-weight: 600; cursor: pointer; }
+.btn-primary-sm:hover { filter: brightness(1.1); }
+.code-block { background: rgba(0,0,0,0.4); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 10px 12px; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; color: #c4b5fd; overflow-x: auto; }
 '''
 
 owner_login_html = '''<!DOCTYPE html>
@@ -3616,7 +4471,7 @@ owner_login_html = '''<!DOCTYPE html>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Панель владельца — Calcio</title>
-{{ pwa_head|safe }}
+{{ owner_pwa_head|safe }}
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
 <style>''' + _BASE_CSS + '''
 </style>
@@ -3626,7 +4481,7 @@ owner_login_html = '''<!DOCTYPE html>
 <div class="blob blob-2"></div>
 <div class="blob blob-3"></div>
 <div class="card">
-  <div class="icon-box">👑</div>
+  <div class="icon-box">📊</div>
   <div class="title">Панель владельца</div>
   <div class="subtitle">Вход для супер-администратора системы</div>
   {% if error %}<div class="error">{{ error }}</div>{% endif %}
@@ -3652,7 +4507,7 @@ owner_dashboard_html = '''<!DOCTYPE html>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Owner Dashboard — Calcio</title>
-{{ pwa_head|safe }}
+{{ owner_pwa_head|safe }}
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
 <style>''' + _OWNER_BASE_CSS + '''</style>
 </head>
@@ -3661,7 +4516,7 @@ owner_dashboard_html = '''<!DOCTYPE html>
 <div class="blob blob-2"></div>
 
 <header class="owner-header">
-  <div class="brand">👑 <span>Панель владельца</span></div>
+  <div class="brand">📊 <span>Панель владельца</span></div>
   <div class="right">
     <span class="owner-email">{{ owner_email }}</span>
     <a class="btn-logout" href="/owner/logout">Выйти</a>
@@ -3681,26 +4536,83 @@ owner_dashboard_html = '''<!DOCTYPE html>
 <nav class="owner-nav">
   <a class="nav-tab active" href="/owner">📊 Дашборд</a>
   <a class="nav-tab" href="/owner/orgs">🏢 Компании</a>
+  <a class="nav-tab" href="/owner/alerts">⚠️ Алерты {% if inactive_count or open_tickets %}<span style="background:#ef4444;color:white;padding:1px 7px;border-radius:99px;font-size:10px;margin-left:4px;">{{ inactive_count + open_tickets }}</span>{% endif %}</a>
+  <a class="nav-tab" href="/owner/tickets">🎫 Тикеты {% if open_tickets %}<span style="background:#ef4444;color:white;padding:1px 7px;border-radius:99px;font-size:10px;margin-left:4px;">{{ open_tickets }}</span>{% endif %}</a>
+  <a class="nav-tab" href="/owner/audit">📋 Аудит</a>
+  <a class="nav-tab" href="/owner/broadcast">📨 Рассылка</a>
+  <a class="nav-tab" href="/owner/catalog">📦 Каталог</a>
+  <a class="nav-tab" href="/owner/backup">🗄 Бэкап</a>
+  <a class="nav-tab" href="/owner/health">🏥 Health</a>
+  <a class="nav-tab" href="/owner/sql">🔧 SQL</a>
 </nav>
 
 <div class="page-content">
 
-  <div class="metrics-grid">
+  <div class="metrics-grid-8">
     <div class="metric-card">
-      <div class="metric-num">{{ total_orgs }}</div>
+      <div class="metric-num small">{{ total_orgs }}</div>
       <div class="metric-label">Всего компаний</div>
     </div>
     <div class="metric-card">
-      <div class="metric-num">{{ active_orgs }}</div>
-      <div class="metric-label">Активных (7 дней)</div>
+      <div class="metric-num small">{{ active_orgs }}</div>
+      <div class="metric-label">Активных (7д)</div>
     </div>
     <div class="metric-card">
-      <div class="metric-num">{{ trial_orgs }}</div>
+      <div class="metric-num small">{{ trial_orgs }}</div>
       <div class="metric-label">На trial</div>
     </div>
     <div class="metric-card">
-      <div class="metric-num">{{ paying_orgs }}</div>
+      <div class="metric-num small">{{ paying_orgs }}</div>
       <div class="metric-label">Платящих</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-num small">{{ mrr }}₽</div>
+      <div class="metric-label">MRR</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-num small">{{ conv_pct }}%</div>
+      <div class="metric-label">Конверсия trial → paid</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-num small">{{ total_users }}</div>
+      <div class="metric-label">Пользователей</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-num small">{{ total_revisions }}</div>
+      <div class="metric-label">Завершённых ревизий</div>
+    </div>
+  </div>
+
+  <div class="charts-grid">
+    <div class="section-card">
+      <div class="chart-title">🆕 Регистрации (30 дней)</div>
+      <div class="chart-total">{{ signups_per_day|sum }}</div>
+      {% set max_s = signups_per_day|max if signups_per_day|max > 0 else 1 %}
+      <svg class="spark" viewBox="0 0 300 60" preserveAspectRatio="none">
+        <defs><linearGradient id="g1" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="#a855f7" stop-opacity="0.55"/>
+          <stop offset="100%" stop-color="#7c6cf0" stop-opacity="0"/></linearGradient></defs>
+        {% set step = 300 / 29 %}
+        {% set pts = [] %}
+        {% for v in signups_per_day %}{% set _ = pts.append(((loop.index0 * step)|round(2), (60 - (v / max_s) * 50)|round(2))) %}{% endfor %}
+        <polygon fill="url(#g1)" points="0,60 {% for x,y in pts %}{{ x }},{{ y }} {% endfor %}300,60"/>
+        <polyline fill="none" stroke="#a855f7" stroke-width="2" points="{% for x,y in pts %}{{ x }},{{ y }} {% endfor %}"/>
+      </svg>
+    </div>
+    <div class="section-card">
+      <div class="chart-title">📦 Активность по дням (30 дней)</div>
+      <div class="chart-total">{{ activity_per_day|sum }}</div>
+      {% set max_a = activity_per_day|max if activity_per_day|max > 0 else 1 %}
+      <svg class="spark" viewBox="0 0 300 60" preserveAspectRatio="none">
+        <defs><linearGradient id="g2" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="#22d3ee" stop-opacity="0.55"/>
+          <stop offset="100%" stop-color="#0ea5e9" stop-opacity="0"/></linearGradient></defs>
+        {% set step2 = 300 / 29 %}
+        {% set pts2 = [] %}
+        {% for v in activity_per_day %}{% set _ = pts2.append(((loop.index0 * step2)|round(2), (60 - (v / max_a) * 50)|round(2))) %}{% endfor %}
+        <polygon fill="url(#g2)" points="0,60 {% for x,y in pts2 %}{{ x }},{{ y }} {% endfor %}300,60"/>
+        <polyline fill="none" stroke="#22d3ee" stroke-width="2" points="{% for x,y in pts2 %}{{ x }},{{ y }} {% endfor %}"/>
+      </svg>
     </div>
   </div>
 
@@ -3763,7 +4675,7 @@ owner_orgs_html = '''<!DOCTYPE html>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Компании — Owner — Calcio</title>
-{{ pwa_head|safe }}
+{{ owner_pwa_head|safe }}
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
 <style>''' + _OWNER_BASE_CSS + '''</style>
 </head>
@@ -3772,7 +4684,7 @@ owner_orgs_html = '''<!DOCTYPE html>
 <div class="blob blob-2"></div>
 
 <header class="owner-header">
-  <div class="brand">👑 <span>Панель владельца</span></div>
+  <div class="brand">📊 <span>Панель владельца</span></div>
   <div class="right">
     <span class="owner-email">{{ owner_email }}</span>
     <a class="btn-logout" href="/owner/logout">Выйти</a>
@@ -3792,6 +4704,14 @@ owner_orgs_html = '''<!DOCTYPE html>
 <nav class="owner-nav">
   <a class="nav-tab" href="/owner">📊 Дашборд</a>
   <a class="nav-tab active" href="/owner/orgs">🏢 Компании</a>
+  <a class="nav-tab" href="/owner/alerts">⚠️ Алерты</a>
+  <a class="nav-tab" href="/owner/tickets">🎫 Тикеты</a>
+  <a class="nav-tab" href="/owner/audit">📋 Аудит</a>
+  <a class="nav-tab" href="/owner/broadcast">📨 Рассылка</a>
+  <a class="nav-tab" href="/owner/catalog">📦 Каталог</a>
+  <a class="nav-tab" href="/owner/backup">🗄 Бэкап</a>
+  <a class="nav-tab" href="/owner/health">🏥 Health</a>
+  <a class="nav-tab" href="/owner/sql">🔧 SQL</a>
 </nav>
 
 <div class="page-content">
@@ -3913,6 +4833,646 @@ function filterOrgs(q) {
 </html>'''
 
 
+# Общий nav-блок для всех owner-страниц (вставляется через replace по active-классу)
+_OWNER_NAV_TEMPLATE = '''
+<nav class="owner-nav">
+  <a class="nav-tab __ACTIVE_dashboard__" href="/owner">📊 Дашборд</a>
+  <a class="nav-tab __ACTIVE_orgs__" href="/owner/orgs">🏢 Компании</a>
+  <a class="nav-tab __ACTIVE_alerts__" href="/owner/alerts">⚠️ Алерты</a>
+  <a class="nav-tab __ACTIVE_tickets__" href="/owner/tickets">🎫 Тикеты</a>
+  <a class="nav-tab __ACTIVE_audit__" href="/owner/audit">📋 Аудит</a>
+  <a class="nav-tab __ACTIVE_broadcast__" href="/owner/broadcast">📨 Рассылка</a>
+  <a class="nav-tab __ACTIVE_catalog__" href="/owner/catalog">📦 Каталог</a>
+  <a class="nav-tab __ACTIVE_backup__" href="/owner/backup">🗄 Бэкап</a>
+  <a class="nav-tab __ACTIVE_health__" href="/owner/health">🏥 Health</a>
+  <a class="nav-tab __ACTIVE_sql__" href="/owner/sql">🔧 SQL</a>
+</nav>
+'''
+
+def _owner_nav(active):
+    nav = _OWNER_NAV_TEMPLATE
+    for key in ('dashboard', 'orgs', 'alerts', 'tickets', 'audit', 'broadcast',
+                'catalog', 'backup', 'health', 'sql'):
+        nav = nav.replace(f'__ACTIVE_{key}__', 'active' if key == active else '')
+    return nav
+
+
+_OWNER_PAGE_HEAD = '''<!DOCTYPE html>
+<html lang="ru"><head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>__TITLE__ — Calcio Owner</title>
+{{ owner_pwa_head|safe }}
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
+<style>''' + _OWNER_BASE_CSS + '''</style>
+</head><body>
+<div class="blob blob-1"></div>
+<div class="blob blob-2"></div>
+<header class="owner-header">
+  <div class="brand">📊 <span>Панель владельца</span></div>
+  <div class="right">
+    <span class="owner-email">{{ owner_email }}</span>
+    <a class="btn-logout" href="/owner/logout">Выйти</a>
+  </div>
+</header>
+{% with messages = get_flashed_messages(with_categories=true) %}
+{% if messages %}
+<div class="flash-messages">
+  {% for cat, msg in messages %}
+  <div class="flash-msg flash-{{ cat }}">{{ msg }}</div>
+  {% endfor %}
+</div>
+{% endif %}
+{% endwith %}
+'''
+
+_OWNER_PAGE_FOOT = '''
+</body></html>'''
+
+
+# ============== ДЕТАЛИ КОМПАНИИ ==============
+owner_org_detail_html = (
+    _OWNER_PAGE_HEAD.replace('__TITLE__', 'Компания')
+    + _owner_nav('orgs') + '''
+<div class="page-content">
+
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px;flex-wrap:wrap;gap:12px;">
+    <div>
+      <h1 style="font-size:24px;font-weight:700;margin-bottom:4px;">{{ org.name }}</h1>
+      <div style="font-size:13px;color:rgba(255,255,255,0.6);">{{ org.owner_email }}</div>
+    </div>
+    <div>
+      <a class="btn-sm btn-extend" href="/owner/orgs">← К списку</a>
+      <form method="post" action="/owner/orgs/{{ org.id }}/impersonate" style="display:inline;"
+            onsubmit="return confirm('Войти как admin компании «{{ org.name }}»? Действие записывается в аудит.');">
+        <button class="btn-sm btn-pro" type="submit">🎭 Войти как admin</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- Метрики -->
+  <div class="metrics-grid-8">
+    <div class="metric-card">
+      <div class="metric-num small">
+        <span class="badge badge-{{ org.plan }}">{{ org.plan }}</span>
+      </div>
+      <div class="metric-label">Тариф · до {{ ends_str }}</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-num small">{{ user_rows|length }}</div>
+      <div class="metric-label">Пользователи</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-num small">{{ locations_count }}</div>
+      <div class="metric-label">Локаций</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-num small">{{ products_count }}</div>
+      <div class="metric-label">Товаров</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-num small">{{ revisions_count }}</div>
+      <div class="metric-label">Всего ревизий</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-num small">{{ items_7d }}</div>
+      <div class="metric-label">Записей за 7 дней</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-num small">{{ org.monthly_price or 0 }}₽</div>
+      <div class="metric-label">Подписка / мес</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-num small">{% if org.is_blocked %}<span style="color:#fca5a5;">🔒</span>{% else %}<span style="color:#6ee7b7;">✓</span>{% endif %}</div>
+      <div class="metric-label">{% if org.is_blocked %}Заблокирована{% else %}Активна{% endif %}</div>
+    </div>
+  </div>
+
+  <!-- Sparkline активности -->
+  <div class="section-card">
+    <div class="chart-title">Активность за 14 дней (записи в ревизиях)</div>
+    {% set max_v = spark|max %}
+    {% if max_v == 0 %}{% set max_v = 1 %}{% endif %}
+    <svg class="spark" viewBox="0 0 280 60" preserveAspectRatio="none">
+      <defs>
+        <linearGradient id="ga" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="#a855f7" stop-opacity="0.45"/>
+          <stop offset="100%" stop-color="#7c6cf0" stop-opacity="0.0"/>
+        </linearGradient>
+      </defs>
+      <polyline fill="none" stroke="#a855f7" stroke-width="2"
+        points="{% for v in spark %}{{ loop.index0 * 280 / 13 }},{{ 56 - (v / max_v) * 50 }} {% endfor %}"/>
+      <polygon fill="url(#ga)"
+        points="0,60 {% for v in spark %}{{ loop.index0 * 280 / 13 }},{{ 56 - (v / max_v) * 50 }} {% endfor %} 280,60"/>
+    </svg>
+  </div>
+
+  <!-- Цена подписки -->
+  <div class="section-card">
+    <div class="section-title">💰 Цена подписки</div>
+    <form method="post" action="/owner/orgs/{{ org.id }}/price" class="input-row">
+      <input type="number" name="monthly_price" min="0" step="100" value="{{ org.monthly_price or 0 }}" class="grow" placeholder="Стоимость в ₽">
+      <button type="submit" class="btn-primary-sm">Сохранить</button>
+    </form>
+    <div style="font-size:12px;color:rgba(255,255,255,0.5);">Используется в расчёте MRR на дашборде.</div>
+  </div>
+
+  <!-- Feature-флаги -->
+  <div class="section-card">
+    <div class="section-title">🚦 Feature-флаги</div>
+    <form method="post" action="/owner/orgs/{{ org.id }}/features">
+      <div class="feature-toggle">
+        <div>
+          <div style="font-weight:600;font-size:14px;">Excel-экспорт</div>
+          <div style="font-size:12px;color:rgba(255,255,255,0.5);">Кнопка скачивания отчётов в .xlsx</div>
+        </div>
+        <label class="toggle-switch">
+          <input type="checkbox" name="excel_export" {% if features.get('excel_export') %}checked{% endif %}>
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+      <div class="feature-toggle">
+        <div>
+          <div style="font-weight:600;font-size:14px;">Несколько локаций</div>
+          <div style="font-size:12px;color:rgba(255,255,255,0.5);">Иначе только одна локация</div>
+        </div>
+        <label class="toggle-switch">
+          <input type="checkbox" name="multi_location" {% if features.get('multi_location') %}checked{% endif %}>
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+      <div class="feature-toggle">
+        <div>
+          <div style="font-weight:600;font-size:14px;">История ревизий</div>
+          <div style="font-size:12px;color:rgba(255,255,255,0.5);">Доступ к архиву прошлых ревизий</div>
+        </div>
+        <label class="toggle-switch">
+          <input type="checkbox" name="history" {% if features.get('history') %}checked{% endif %}>
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+      <div class="feature-toggle">
+        <div>
+          <div style="font-weight:600;font-size:14px;">Безлимит пользователей</div>
+          <div style="font-size:12px;color:rgba(255,255,255,0.5);">Без ограничений по числу операторов</div>
+        </div>
+        <label class="toggle-switch">
+          <input type="checkbox" name="unlimited_users" {% if features.get('unlimited_users') %}checked{% endif %}>
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+      <button type="submit" class="btn-primary-sm" style="margin-top:14px;">Сохранить флаги</button>
+    </form>
+  </div>
+
+  <!-- Пользователи -->
+  <div class="section-card">
+    <div class="section-title">👥 Пользователи компании</div>
+    {% if user_rows %}
+    <table class="recent-table">
+      <thead><tr><th>Логин</th><th>Email</th><th>Роль</th><th>Последний вход</th></tr></thead>
+      <tbody>
+        {% for u in user_rows %}
+        <tr>
+          <td style="font-weight:600;">{{ u.username }}</td>
+          <td style="color:rgba(255,255,255,0.6);">{{ u.email }}</td>
+          <td><span class="badge badge-{{ 'pro' if u.role == 'admin' else 'free' }}">{{ u.role }}</span></td>
+          <td style="color:rgba(255,255,255,0.5);font-size:12px;">{{ u.last_login }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div style="color:rgba(255,255,255,0.5);font-size:13px;">Пока нет пользователей.</div>
+    {% endif %}
+  </div>
+
+</div>
+''' + _OWNER_PAGE_FOOT
+)
+
+
+# ============== АУДИТ ==============
+owner_audit_html = (
+    _OWNER_PAGE_HEAD.replace('__TITLE__', 'Аудит')
+    + _owner_nav('audit') + '''
+<div class="page-content">
+  <h1 style="font-size:22px;font-weight:700;margin-bottom:14px;">📋 Журнал действий владельца</h1>
+  <div style="font-size:13px;color:rgba(255,255,255,0.5);margin-bottom:14px;">Последние 200 значимых действий. Используется для расследования инцидентов и комплаенса.</div>
+  <div class="glass" style="padding:12px;overflow:auto;">
+    {% if log_rows %}
+    <table class="audit-table">
+      <thead><tr>
+        <th>Когда</th><th>Действие</th><th>Компания</th><th>IP</th><th>Детали</th>
+      </tr></thead>
+      <tbody>
+      {% for r in log_rows %}
+      <tr>
+        <td style="white-space:nowrap;color:rgba(255,255,255,0.7);">{{ r.when }}</td>
+        <td><span class="action-pill">{{ r.action }}</span></td>
+        <td style="color:rgba(255,255,255,0.7);">{{ r.org }}</td>
+        <td style="color:rgba(255,255,255,0.5);font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;">{{ r.ip }}</td>
+        <td style="color:rgba(255,255,255,0.65);font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;">{{ r.details }}</td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div style="padding:30px;text-align:center;color:rgba(255,255,255,0.4);">Журнал пуст.</div>
+    {% endif %}
+  </div>
+</div>
+''' + _OWNER_PAGE_FOOT
+)
+
+
+# ============== АЛЕРТЫ ==============
+owner_alerts_html = (
+    _OWNER_PAGE_HEAD.replace('__TITLE__', 'Алерты')
+    + _owner_nav('alerts') + '''
+<div class="page-content">
+  <h1 style="font-size:22px;font-weight:700;margin-bottom:18px;">⚠️ Алерты</h1>
+
+  <div class="alert-section">
+    <h3>🔥 Trial истекает в течение 3 дней <span style="color:rgba(255,255,255,0.4);font-size:12px;font-weight:400;">({{ expiring_3|length }})</span></h3>
+    {% if expiring_3 %}
+      {% for r in expiring_3 %}
+      <div class="alert-row">
+        <div>
+          <a href="/owner/orgs/{{ r.id }}" style="color:white;text-decoration:none;font-weight:600;">{{ r.name }}</a>
+          <div style="font-size:11px;color:rgba(255,255,255,0.5);">{{ r.email }}</div>
+        </div>
+        <div>
+          <span class="days-badge">{{ r.days }} дн.</span>
+          <form method="post" action="/owner/orgs/{{ r.id }}/extend_trial" style="display:inline;">
+            <button class="btn-sm btn-extend" type="submit">+7д</button>
+          </form>
+        </div>
+      </div>
+      {% endfor %}
+    {% else %}<div style="color:rgba(255,255,255,0.45);font-size:13px;">Никого. 👌</div>{% endif %}
+  </div>
+
+  <div class="alert-section warn">
+    <h3>⏳ Trial истекает в течение 4–7 дней <span style="color:rgba(255,255,255,0.4);font-size:12px;font-weight:400;">({{ expiring_7|length }})</span></h3>
+    {% if expiring_7 %}
+      {% for r in expiring_7 %}
+      <div class="alert-row">
+        <div>
+          <a href="/owner/orgs/{{ r.id }}" style="color:white;text-decoration:none;font-weight:600;">{{ r.name }}</a>
+          <div style="font-size:11px;color:rgba(255,255,255,0.5);">{{ r.email }}</div>
+        </div>
+        <div>
+          <span class="days-badge">{{ r.days }} дн.</span>
+          <form method="post" action="/owner/orgs/{{ r.id }}/extend_trial" style="display:inline;">
+            <button class="btn-sm btn-extend" type="submit">+7д</button>
+          </form>
+        </div>
+      </div>
+      {% endfor %}
+    {% else %}<div style="color:rgba(255,255,255,0.45);font-size:13px;">Пусто.</div>{% endif %}
+  </div>
+
+  <div class="alert-section info">
+    <h3>💸 Платная подписка истекает в течение 7 дней <span style="color:rgba(255,255,255,0.4);font-size:12px;font-weight:400;">({{ paid_expiring|length }})</span></h3>
+    {% if paid_expiring %}
+      {% for r in paid_expiring %}
+      <div class="alert-row">
+        <div>
+          <a href="/owner/orgs/{{ r.id }}" style="color:white;text-decoration:none;font-weight:600;">{{ r.name }}</a>
+          <div style="font-size:11px;color:rgba(255,255,255,0.5);">{{ r.email }}</div>
+        </div>
+        <span class="days-badge">{{ r.days }} дн.</span>
+      </div>
+      {% endfor %}
+    {% else %}<div style="color:rgba(255,255,255,0.45);font-size:13px;">Никаких ожидаемых истечений.</div>{% endif %}
+  </div>
+
+  <div class="alert-section warn">
+    <h3>😴 Неактивные компании <span style="color:rgba(255,255,255,0.4);font-size:12px;font-weight:400;">({{ inactive|length }})</span></h3>
+    {% if inactive %}
+      {% for r in inactive %}
+      <div class="alert-row">
+        <div>
+          <a href="/owner/orgs/{{ r.id }}" style="color:white;text-decoration:none;font-weight:600;">{{ r.name }}</a>
+          <div style="font-size:11px;color:rgba(255,255,255,0.5);">{{ r.email }} · последний вход: {{ r.last }}</div>
+        </div>
+        {% if r.churn_risk %}
+          <span class="ticket-status status-open">churn-risk</span>
+        {% else %}
+          <span class="ticket-status status-answered">14d+</span>
+        {% endif %}
+      </div>
+      {% endfor %}
+    {% else %}<div style="color:rgba(255,255,255,0.45);font-size:13px;">Все активны.</div>{% endif %}
+  </div>
+
+</div>
+''' + _OWNER_PAGE_FOOT
+)
+
+
+# ============== РАССЫЛКА ==============
+owner_broadcast_html = (
+    _OWNER_PAGE_HEAD.replace('__TITLE__', 'Рассылка')
+    + _owner_nav('broadcast') + '''
+<div class="page-content">
+  <h1 style="font-size:22px;font-weight:700;margin-bottom:18px;">📨 Рассылка клиентам</h1>
+
+  <div class="section-card">
+    <form method="post" action="/owner/broadcast">
+      <div style="margin-bottom:14px;">
+        <label style="display:block;font-size:12px;color:rgba(255,255,255,0.6);margin-bottom:6px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">Аудитория</label>
+        <select name="audience" class="grow" style="background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.12);border-radius:10px;color:white;padding:10px 12px;font-family:'Outfit',sans-serif;font-size:14px;width:100%;">
+          <option value="all">Все компании</option>
+          <option value="trial">Только trial (активные)</option>
+          <option value="paid">Только платные (pro/business)</option>
+          <option value="inactive14">Не заходили 14+ дней</option>
+        </select>
+      </div>
+      <div style="margin-bottom:14px;">
+        <label style="display:block;font-size:12px;color:rgba(255,255,255,0.6);margin-bottom:6px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">Тема письма</label>
+        <input name="subject" required class="grow" style="background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.12);border-radius:10px;color:white;padding:10px 12px;font-family:'Outfit',sans-serif;font-size:14px;width:100%;" placeholder="Например: Новые функции в Calcio">
+      </div>
+      <div style="margin-bottom:14px;">
+        <label style="display:block;font-size:12px;color:rgba(255,255,255,0.6);margin-bottom:6px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">Текст</label>
+        <textarea name="body" required class="broadcast-area" placeholder="Здравствуйте! Мы добавили..."></textarea>
+      </div>
+      <button type="submit" class="btn-primary-sm">📨 Отправить рассылку</button>
+    </form>
+  </div>
+
+  <div class="section-card" style="font-size:13px;color:rgba(255,255,255,0.6);">
+    <div class="section-title">ℹ️ Как это работает</div>
+    <p style="margin-bottom:8px;">Сейчас рассылка фиксирует адресатов и пишет запись в аудит. Реальная отправка email подключается отдельно (SMTP / SendGrid / Postmark).</p>
+    <p>После настройки SMTP письма будут улетать в фоновом режиме на адреса <code class="code-block" style="display:inline;padding:2px 6px;">organization.owner_email</code>.</p>
+  </div>
+
+</div>
+''' + _OWNER_PAGE_FOOT
+)
+
+
+# ============== БЭКАП ==============
+owner_backup_html = (
+    _OWNER_PAGE_HEAD.replace('__TITLE__', 'Бэкап')
+    + _owner_nav('backup') + '''
+<div class="page-content">
+  <h1 style="font-size:22px;font-weight:700;margin-bottom:18px;">🗄 Бэкап базы данных</h1>
+
+  <div class="section-card">
+    <div class="section-title">📦 Скачать снимок данных (JSON)</div>
+    <p style="font-size:13px;color:rgba(255,255,255,0.6);margin-bottom:16px;">
+      Будет сгенерирован zip со всеми основными таблицами в JSON: компании, пользователи, локации, категории, товары, нормы, ревизии, тикеты, каталог, аудит. Бинарные данные (Excel-шаблоны) исключены — фиксируется только размер.
+    </p>
+    <a class="btn-primary-sm" href="/owner/backup/download" style="text-decoration:none;display:inline-block;">⬇️ Скачать ZIP</a>
+  </div>
+
+  <div class="section-card" style="font-size:13px;color:rgba(255,255,255,0.6);">
+    <div class="section-title">💡 Рекомендация</div>
+    <p>Для production-окружения настройте автоматические бэкапы PostgreSQL на стороне Render (или своего хостинга). Этот ручной экспорт — удобный быстрый снимок для отладки и переноса.</p>
+  </div>
+</div>
+''' + _OWNER_PAGE_FOOT
+)
+
+
+# ============== ТИКЕТЫ (СПИСОК) ==============
+owner_tickets_html = (
+    _OWNER_PAGE_HEAD.replace('__TITLE__', 'Тикеты')
+    + _owner_nav('tickets') + '''
+<div class="page-content">
+  <h1 style="font-size:22px;font-weight:700;margin-bottom:14px;">🎫 Тикеты поддержки</h1>
+  <div style="font-size:13px;color:rgba(255,255,255,0.5);margin-bottom:18px;">Сначала открытые, затем по дате обновления.</div>
+
+  {% if items %}
+    {% for t in items %}
+    <a href="/owner/tickets/{{ t.id }}" class="ticket-row">
+      <div style="flex:1;min-width:0;">
+        <div style="font-weight:600;font-size:14px;margin-bottom:3px;">{{ t.subject }}</div>
+        <div style="font-size:12px;color:rgba(255,255,255,0.5);">{{ t.org_name }} · {{ t.when }}</div>
+      </div>
+      <span class="ticket-status status-{{ t.status }}">{{ t.status }}</span>
+    </a>
+    {% endfor %}
+  {% else %}
+    <div class="section-card" style="text-align:center;color:rgba(255,255,255,0.5);padding:40px 20px;">
+      <div style="font-size:42px;margin-bottom:10px;opacity:0.6;">📭</div>
+      <div>Нет тикетов</div>
+    </div>
+  {% endif %}
+</div>
+''' + _OWNER_PAGE_FOOT
+)
+
+
+# ============== ТИКЕТ (ДЕТАЛИ) ==============
+owner_ticket_view_html = (
+    _OWNER_PAGE_HEAD.replace('__TITLE__', 'Тикет')
+    + _owner_nav('tickets') + '''
+<div class="page-content">
+  <a href="/owner/tickets" style="color:#a78bfa;text-decoration:none;font-size:13px;">← К списку тикетов</a>
+
+  <div style="display:flex;justify-content:space-between;align-items:flex-start;margin:14px 0 18px;flex-wrap:wrap;gap:12px;">
+    <div style="flex:1;min-width:0;">
+      <h1 style="font-size:20px;font-weight:700;margin-bottom:6px;">{{ t.subject }}</h1>
+      <div style="font-size:13px;color:rgba(255,255,255,0.55);">
+        Компания: <a href="/owner/orgs/{{ org.id if org else 0 }}" style="color:#a78bfa;text-decoration:none;">{{ org.name if org else '—' }}</a>
+        · Создан: {{ t.created_at.strftime('%d.%m.%Y %H:%M') if t.created_at else '—' }}
+      </div>
+    </div>
+    <span class="ticket-status status-{{ t.status }}">{{ t.status }}</span>
+  </div>
+
+  <div class="section-card">
+    <div style="font-size:11px;color:rgba(255,255,255,0.4);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;">Исходное обращение</div>
+    <div style="white-space:pre-wrap;font-size:14px;line-height:1.55;color:rgba(255,255,255,0.9);">{{ t.body }}</div>
+  </div>
+
+  {% for r in replies %}
+  <div class="section-card" style="border-left: 3px solid {{ '#a855f7' if r.author_type == 'owner' else '#10b981' }};">
+    <div style="font-size:11px;color:rgba(255,255,255,0.5);margin-bottom:6px;">
+      <b>{{ r.author_label or ('Владелец' if r.author_type == 'owner' else 'Клиент') }}</b>
+      · {{ r.created_at.strftime('%d.%m.%Y %H:%M') if r.created_at else '' }}
+    </div>
+    <div style="white-space:pre-wrap;font-size:14px;line-height:1.55;">{{ r.body }}</div>
+  </div>
+  {% endfor %}
+
+  {% if t.status != 'closed' %}
+  <div class="section-card">
+    <div class="section-title">Ответить</div>
+    <form method="post">
+      <textarea name="body" class="broadcast-area" placeholder="Ваш ответ клиенту..." style="min-height:120px;"></textarea>
+      <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap;">
+        <button type="submit" name="action" value="reply" class="btn-primary-sm">💬 Отправить ответ</button>
+        <button type="submit" name="action" value="close" class="btn-sm btn-warn"
+                onclick="return confirm('Закрыть тикет?');">🗙 Закрыть тикет</button>
+      </div>
+    </form>
+  </div>
+  {% else %}
+  <div class="section-card" style="text-align:center;color:rgba(255,255,255,0.5);">Тикет закрыт.</div>
+  {% endif %}
+</div>
+''' + _OWNER_PAGE_FOOT
+)
+
+
+# ============== КАТАЛОГ ==============
+owner_catalog_html = (
+    _OWNER_PAGE_HEAD.replace('__TITLE__', 'Каталог')
+    + _owner_nav('catalog') + '''
+<div class="page-content">
+  <h1 style="font-size:22px;font-weight:700;margin-bottom:6px;">📦 Глобальный каталог</h1>
+  <div style="font-size:13px;color:rgba(255,255,255,0.55);margin-bottom:18px;">Стартовый набор товаров. Клиенты смогут импортировать его одной кнопкой при первом входе.</div>
+
+  <div class="section-card">
+    <div class="section-title">Добавить товар</div>
+    <form method="post" action="/owner/catalog">
+      <div class="input-row">
+        <input name="name" required placeholder="Название товара" class="grow">
+        <input name="code" placeholder="Код (опц.)" style="width:120px;">
+        <input name="unit" placeholder="Ед." value="шт" style="width:80px;">
+      </div>
+      <div class="input-row">
+        <input name="category" placeholder="Категория (например, Напитки)" class="grow">
+        <button type="submit" class="btn-primary-sm">+ Добавить</button>
+      </div>
+    </form>
+  </div>
+
+  <div class="section-card" style="padding:0;overflow:auto;">
+    {% if rows %}
+    <table class="recent-table" style="margin:0;">
+      <thead><tr>
+        <th>Категория</th><th>Название</th><th>Код</th><th>Ед.</th><th></th>
+      </tr></thead>
+      <tbody>
+      {% for r in rows %}
+      <tr>
+        <td style="color:rgba(255,255,255,0.6);">{{ r.category_name or '—' }}</td>
+        <td style="font-weight:600;">{{ r.name }}</td>
+        <td style="color:rgba(255,255,255,0.5);font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;">{{ r.code or '—' }}</td>
+        <td>{{ r.unit }}</td>
+        <td style="text-align:right;">
+          <form method="post" action="/owner/catalog/{{ r.id }}/delete" style="display:inline;"
+                onsubmit="return confirm('Удалить «{{ r.name }}» из каталога?');">
+            <button class="btn-sm btn-danger" type="submit">🗑</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div style="padding:30px;text-align:center;color:rgba(255,255,255,0.45);">Каталог пуст. Добавьте первые товары выше.</div>
+    {% endif %}
+  </div>
+</div>
+''' + _OWNER_PAGE_FOOT
+)
+
+
+# ============== HEALTH ==============
+owner_health_html = (
+    _OWNER_PAGE_HEAD.replace('__TITLE__', 'Health')
+    + _owner_nav('health') + '''
+<div class="page-content">
+  <h1 style="font-size:22px;font-weight:700;margin-bottom:18px;">🏥 Health-check</h1>
+
+  <div class="metrics-grid-8">
+    <div class="metric-card">
+      <div class="metric-num small" style="color: {{ '#6ee7b7' if h.db_ok else '#fca5a5' }};">
+        {{ '✓ OK' if h.db_ok else '✗ FAIL' }}
+      </div>
+      <div class="metric-label">База данных</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-num small">{{ h.db_latency_ms if h.db_latency_ms is not none else '—' }} мс</div>
+      <div class="metric-label">Latency БД</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-num small">{{ h.db_size }}</div>
+      <div class="metric-label">Размер БД</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-num small">{{ h.uptime }}</div>
+      <div class="metric-label">Uptime приложения</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-num small">{{ h.orgs }}</div>
+      <div class="metric-label">Организаций</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-num small">{{ h.users }}</div>
+      <div class="metric-label">Пользователей</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-num small">{{ h.products }}</div>
+      <div class="metric-label">Товаров</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-num small">{{ h.revisions }} / {{ h.items }}</div>
+      <div class="metric-label">Ревизий / записей</div>
+    </div>
+  </div>
+
+  <div class="section-card" style="font-size:13px;color:rgba(255,255,255,0.6);">
+    <div class="section-title">ℹ️ Запущено</div>
+    <code class="code-block">{{ h.app_started }} UTC</code>
+  </div>
+</div>
+''' + _OWNER_PAGE_FOOT
+)
+
+
+# ============== SQL КОНСОЛЬ ==============
+owner_sql_html = (
+    _OWNER_PAGE_HEAD.replace('__TITLE__', 'SQL')
+    + _owner_nav('sql') + '''
+<div class="page-content">
+  <h1 style="font-size:22px;font-weight:700;margin-bottom:6px;">🔧 SQL-консоль</h1>
+  <div style="font-size:13px;color:rgba(255,255,255,0.55);margin-bottom:18px;">По умолчанию разрешены только SELECT. Все запросы пишутся в аудит.</div>
+
+  <div class="section-card">
+    <form method="post">
+      <textarea name="query" class="broadcast-area" style="min-height:120px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px;" placeholder="SELECT id, name, plan FROM organizations ORDER BY created_at DESC LIMIT 20;">{{ query }}</textarea>
+      <div style="display:flex;gap:14px;align-items:center;margin-top:12px;flex-wrap:wrap;">
+        <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;">
+          <input type="checkbox" name="allow_write" style="width:18px;height:18px;accent-color:#7c6cf0;">
+          <span style="color:#fcd34d;">⚠️ Разрешить запись (INSERT/UPDATE/DELETE/DDL)</span>
+        </label>
+        <button type="submit" class="btn-primary-sm">▶ Выполнить</button>
+      </div>
+    </form>
+  </div>
+
+  {% if executed %}
+    {% if error %}
+    <div class="section-card" style="background:rgba(239,68,68,0.08);border-color:rgba(239,68,68,0.3);">
+      <div class="section-title" style="color:#fca5a5;">❌ Ошибка</div>
+      <code class="code-block" style="color:#fca5a5;white-space:pre-wrap;">{{ error }}</code>
+    </div>
+    {% else %}
+    <div class="section-card" style="padding:0;overflow:auto;">
+      <div style="padding:14px 16px 8px;font-size:12px;color:rgba(255,255,255,0.55);">Результат: {{ result_rows|length }} строк</div>
+      <table class="recent-table" style="margin:0;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;">
+        <thead><tr>{% for c in result_cols %}<th>{{ c }}</th>{% endfor %}</tr></thead>
+        <tbody>
+          {% for row in result_rows %}
+          <tr>{% for v in row %}<td style="color:rgba(255,255,255,0.85);">{{ v if v is not none else 'NULL' }}</td>{% endfor %}</tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+  {% endif %}
+</div>
+''' + _OWNER_PAGE_FOOT
+)
+
+
 # Создаём таблицы и owner при первом запуске
 with app.app_context():
     db.create_all()
@@ -3923,9 +5483,15 @@ with app.app_context():
             conn.execute(db.text(
                 'ALTER TABLE organizations ADD COLUMN IF NOT EXISTS excel_template BYTEA'
             ))
+            conn.execute(db.text(
+                'ALTER TABLE organizations ADD COLUMN IF NOT EXISTS features JSONB'
+            ))
+            conn.execute(db.text(
+                'ALTER TABLE organizations ADD COLUMN IF NOT EXISTS monthly_price INTEGER DEFAULT 0'
+            ))
             conn.commit()
     except Exception as _e:
-        print(f'⚠️  Миграция excel_template: {_e}')
+        print(f'⚠️  Миграция колонок organizations: {_e}')
 
     # Миграция: переименовываем admin-пользователя Мобара в TimurSaipov
     try:

@@ -32,6 +32,12 @@ class Organization(db.Model):
     # Кастомный Excel-шаблон для отчётов (хранится как бинарные данные)
     excel_template = db.Column(db.LargeBinary, nullable=True)
 
+    # Feature-флаги: словарь { 'excel_export': true, 'multi_location': true, ... }
+    features = db.Column(db.JSON, nullable=True)
+
+    # Сумма ежемесячной подписки (для MRR), в рублях
+    monthly_price = db.Column(db.Integer, default=0)
+
     # Связи — все данные компании
     users = db.relationship('User', backref='organization', lazy=True, cascade='all, delete-orphan')
     locations = db.relationship('Location', backref='organization', lazy=True, cascade='all, delete-orphan')
@@ -191,6 +197,63 @@ class OwnerUser(db.Model):
 
     def check_password(self, raw):
         return check_password_hash(self.password_hash, raw)
+
+
+# ============== АУДИТ ДЕЙСТВИЙ ВЛАДЕЛЬЦА ==============
+class OwnerAuditLog(db.Model):
+    """Лог всех значимых действий владельца системы."""
+    __tablename__ = 'owner_audit_log'
+
+    id = db.Column(db.Integer, primary_key=True)
+    owner_id = db.Column(db.Integer, db.ForeignKey('owner_users.id'), nullable=True)
+    action = db.Column(db.String(80), nullable=False, index=True)
+    target_org_id = db.Column(db.Integer, db.ForeignKey('organizations.id'), nullable=True)
+    target_user_id = db.Column(db.Integer, nullable=True)
+    details = db.Column(db.Text, nullable=True)
+    ip_address = db.Column(db.String(45), nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+
+
+# ============== ТИКЕТЫ ПОДДЕРЖКИ ==============
+class SupportTicket(db.Model):
+    """Тикет поддержки от клиента владельцу."""
+    __tablename__ = 'support_tickets'
+
+    id = db.Column(db.Integer, primary_key=True)
+    org_id = db.Column(db.Integer, db.ForeignKey('organizations.id'), nullable=False, index=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=True)
+    subject = db.Column(db.String(300), nullable=False)
+    body = db.Column(db.Text, nullable=False)
+    status = db.Column(db.String(20), default='open', index=True)  # open / answered / closed
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    replies = db.relationship('SupportTicketReply', backref='ticket', lazy=True, cascade='all, delete-orphan')
+
+
+class SupportTicketReply(db.Model):
+    """Ответ в тикете (от клиента или от владельца)."""
+    __tablename__ = 'support_ticket_replies'
+
+    id = db.Column(db.Integer, primary_key=True)
+    ticket_id = db.Column(db.Integer, db.ForeignKey('support_tickets.id'), nullable=False, index=True)
+    author_type = db.Column(db.String(20), nullable=False)  # 'user' or 'owner'
+    author_label = db.Column(db.String(150), nullable=True)
+    body = db.Column(db.Text, nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+
+# ============== ГЛОБАЛЬНЫЙ КАТАЛОГ ТОВАРОВ ==============
+class CatalogProduct(db.Model):
+    """Дефолтные товары — могут быть импортированы любой компанией одним кликом."""
+    __tablename__ = 'catalog_products'
+
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(300), nullable=False)
+    code = db.Column(db.String(100), nullable=True)
+    unit = db.Column(db.String(20), default='шт')
+    category_name = db.Column(db.String(200), nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 
 # ============== ЗАЩИТА ОТ БРУТФОРСА ==============
