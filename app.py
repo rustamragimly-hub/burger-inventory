@@ -3037,9 +3037,9 @@ hr.soft { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 
 <div class="blob blob-2"></div>
 
 {% if is_impersonating %}
-<div style="background:linear-gradient(135deg,#a855f7,#7c6cf0);padding:10px 16px;display:flex;align-items:center;justify-content:space-between;font-size:13px;font-weight:600;gap:10px;flex-wrap:wrap;">
-  <span>🎭 Вы вошли как admin компании <b>{{ org.name }}</b> от имени владельца. Все действия записываются в аудит.</span>
-  <a href="/owner/stop_impersonate" style="background:rgba(255,255,255,0.2);color:white;padding:5px 12px;border-radius:8px;text-decoration:none;font-weight:700;">← Вернуться в Owner</a>
+<div style="background:linear-gradient(135deg,#a855f7,#7c6cf0);padding:10px 14px;display:flex;align-items:center;justify-content:space-between;font-size:12px;font-weight:600;gap:10px;flex-wrap:wrap;">
+  <span style="flex:1;min-width:200px;line-height:1.35;">🎭 Вы вошли как admin <b>{{ org.name }}</b> от имени владельца. Действия пишутся в аудит.</span>
+  <a href="/owner/stop_impersonate" style="background:rgba(255,255,255,0.22);color:white;padding:6px 12px;border-radius:8px;text-decoration:none;font-weight:700;white-space:nowrap;font-size:12px;">← В Owner</a>
 </div>
 {% endif %}
 
@@ -4463,6 +4463,84 @@ textarea.broadcast-area:focus { outline: none; border-color: rgba(124,108,240,0.
 .btn-primary-sm { background: linear-gradient(135deg, #7c6cf0, #a855f7); color: white; border: none; padding: 10px 20px; border-radius: 10px; font-family: 'Outfit', sans-serif; font-size: 14px; font-weight: 600; cursor: pointer; }
 .btn-primary-sm:hover { filter: brightness(1.1); }
 .code-block { background: rgba(0,0,0,0.4); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 10px 12px; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; color: #c4b5fd; overflow-x: auto; }
+.dash-bottom-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.tbl-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+
+/* === Универсальные стили скролла навигации (без скроллбара) === */
+.owner-nav { -webkit-overflow-scrolling: touch; }
+.owner-nav::-webkit-scrollbar { display: none; }
+.owner-nav { scrollbar-width: none; }
+
+/* === ПЛАНШЕТ (≤900px) === */
+@media (max-width: 900px) {
+    .page-content { padding: 16px 14px 80px; }
+    .owner-header { padding: 0 14px; height: 56px; }
+    .owner-header .brand { font-size: 16px; }
+    .owner-email { display: none; }
+    .btn-logout { padding: 6px 11px; font-size: 12px; }
+    .flash-messages { padding: 10px 14px 0; }
+    .owner-nav { padding: 12px 12px 0; flex-wrap: nowrap; overflow-x: auto; }
+    .nav-tab { padding: 8px 14px; font-size: 13px; white-space: nowrap; flex-shrink: 0; }
+    .dash-bottom-grid { grid-template-columns: 1fr; }
+    .charts-grid { grid-template-columns: 1fr; }
+    .recent-table { font-size: 13px; }
+    .recent-table th, .recent-table td { padding: 8px 8px; }
+}
+
+/* === ТЕЛЕФОН (≤640px) === */
+@media (max-width: 640px) {
+    .metrics-grid, .metrics-grid-8 { grid-template-columns: repeat(2, 1fr); gap: 10px; margin-bottom: 16px; }
+    .metric-card { padding: 14px; border-radius: 14px; }
+    .metric-num { font-size: 24px; }
+    .metric-num.small { font-size: 19px; }
+    .metric-label { font-size: 11px; margin-top: 4px; }
+    .section-card { padding: 14px; border-radius: 14px; margin-bottom: 14px; }
+    .section-title { font-size: 14px; margin-bottom: 10px; }
+    .chart-total { font-size: 20px; }
+    .spark { height: 50px; }
+    /* Таблицы — горизонтальный скролл */
+    .audit-table { font-size: 11px; min-width: 560px; }
+    .recent-table { min-width: 480px; }
+    .orgs-table { min-width: 720px; }
+    /* Алерты: вертикальная компоновка */
+    .alert-row { flex-direction: column; align-items: stretch; gap: 6px; padding: 10px 0; }
+    .alert-row > div:first-child { width: 100%; }
+    .alert-row > :last-child:not(:first-child) { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+    .expiring-row { flex-direction: column; align-items: stretch; gap: 8px; padding: 10px 0; }
+    .expiring-row > :last-child:not(:first-child) { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+    /* Input-row — стек на мобильном */
+    .input-row { flex-direction: column; align-items: stretch; gap: 8px; }
+    .input-row input, .input-row select, .input-row textarea { width: 100%; }
+    .input-row .grow { flex: 1 1 auto; }
+    /* Touch targets */
+    .btn-sm { padding: 8px 14px; font-size: 13px; min-height: 36px; line-height: 1.1; }
+    .btn-primary-sm { padding: 12px 22px; font-size: 14px; min-height: 44px; width: 100%; }
+    .nav-tab { padding: 8px 13px; font-size: 13px; }
+    .actions-cell { gap: 6px; }
+    .actions-cell .btn-sm { min-height: 34px; }
+    /* Badges — больше воздуха */
+    .badge { font-size: 10px; padding: 3px 8px; }
+    /* Form labels — лучше читаются */
+    .feature-toggle { padding: 12px 0; }
+    .feature-toggle > div:first-child { flex: 1; min-width: 0; padding-right: 10px; }
+    /* Тикеты */
+    .ticket-row { padding: 12px 14px; }
+    /* Текстовые области выше */
+    textarea.broadcast-area { min-height: 160px; font-size: 14px; }
+    /* H1 в страницах */
+    .page-content h1 { font-size: 19px !important; }
+}
+
+/* === МАЛЕНЬКИЙ ТЕЛЕФОН (≤380px) === */
+@media (max-width: 380px) {
+    .metrics-grid, .metrics-grid-8 { grid-template-columns: 1fr; }
+    .owner-header { padding: 0 10px; }
+    .owner-header .brand { font-size: 15px; }
+    .nav-tab { padding: 7px 11px; font-size: 12px; }
+    .page-content { padding: 12px 10px 80px; }
+    .section-card { padding: 12px; }
+    .metric-card { padding: 12px; }
+}
 '''
 
 owner_login_html = '''<!DOCTYPE html>
@@ -4638,9 +4716,10 @@ owner_dashboard_html = '''<!DOCTYPE html>
     {% endif %}
   </div>
 
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
+  <div class="dash-bottom-grid">
     <div class="section-card">
       <div class="section-title">🆕 Последние регистрации</div>
+      <div class="tbl-wrap">
       <table class="recent-table">
         <thead><tr>
           <th>Компания</th><th>Email</th><th>Тариф</th><th>Дата</th>
@@ -4656,11 +4735,12 @@ owner_dashboard_html = '''<!DOCTYPE html>
         {% endfor %}
         </tbody>
       </table>
+      </div>
     </div>
     <div class="section-card" style="display:flex;flex-direction:column;justify-content:center;align-items:center;">
       <div class="section-title" style="text-align:center;">📦 Активность сегодня</div>
-      <div style="font-size:48px;font-weight:700;color:white;margin:12px 0;">{{ activity_today }}</div>
-      <div style="font-size:13px;color:rgba(255,255,255,0.5);">позиций добавлено в ревизии</div>
+      <div style="font-size:44px;font-weight:700;color:white;margin:12px 0;line-height:1;">{{ activity_today }}</div>
+      <div style="font-size:13px;color:rgba(255,255,255,0.5);text-align:center;">позиций добавлено в ревизии</div>
     </div>
   </div>
 
@@ -4897,11 +4977,11 @@ owner_org_detail_html = (
 <div class="page-content">
 
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px;flex-wrap:wrap;gap:12px;">
-    <div>
-      <h1 style="font-size:24px;font-weight:700;margin-bottom:4px;">{{ org.name }}</h1>
-      <div style="font-size:13px;color:rgba(255,255,255,0.6);">{{ org.owner_email }}</div>
+    <div style="flex:1;min-width:0;">
+      <h1 style="font-size:22px;font-weight:700;margin-bottom:4px;word-break:break-word;">{{ org.name }}</h1>
+      <div style="font-size:13px;color:rgba(255,255,255,0.6);word-break:break-all;">{{ org.owner_email }}</div>
     </div>
-    <div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;">
       <a class="btn-sm btn-extend" href="/owner/orgs">← К списку</a>
       <form method="post" action="/owner/orgs/{{ org.id }}/impersonate" style="display:inline;"
             onsubmit="return confirm('Войти как admin компании «{{ org.name }}»? Действие записывается в аудит.');">
@@ -5029,7 +5109,8 @@ owner_org_detail_html = (
   <div class="section-card">
     <div class="section-title">👥 Пользователи компании</div>
     {% if user_rows %}
-    <table class="recent-table">
+    <div class="tbl-wrap">
+    <table class="recent-table" style="min-width:520px;">
       <thead><tr><th>Логин</th><th>Email</th><th>Роль</th><th>Последний вход</th></tr></thead>
       <tbody>
         {% for u in user_rows %}
@@ -5042,6 +5123,7 @@ owner_org_detail_html = (
         {% endfor %}
       </tbody>
     </table>
+    </div>
     {% else %}
     <div style="color:rgba(255,255,255,0.5);font-size:13px;">Пока нет пользователей.</div>
     {% endif %}
@@ -5059,7 +5141,7 @@ owner_audit_html = (
 <div class="page-content">
   <h1 style="font-size:22px;font-weight:700;margin-bottom:14px;">📋 Журнал действий владельца</h1>
   <div style="font-size:13px;color:rgba(255,255,255,0.5);margin-bottom:14px;">Последние 200 значимых действий. Используется для расследования инцидентов и комплаенса.</div>
-  <div class="glass" style="padding:12px;overflow:auto;">
+  <div class="glass tbl-wrap" style="padding:12px;">
     {% if log_rows %}
     <table class="audit-table">
       <thead><tr>
@@ -5342,9 +5424,9 @@ owner_catalog_html = (
     </form>
   </div>
 
-  <div class="section-card" style="padding:0;overflow:auto;">
+  <div class="section-card tbl-wrap" style="padding:0;">
     {% if rows %}
-    <table class="recent-table" style="margin:0;">
+    <table class="recent-table" style="margin:0;min-width:560px;">
       <thead><tr>
         <th>Категория</th><th>Название</th><th>Код</th><th>Ед.</th><th></th>
       </tr></thead>
@@ -5455,9 +5537,9 @@ owner_sql_html = (
       <code class="code-block" style="color:#fca5a5;white-space:pre-wrap;">{{ error }}</code>
     </div>
     {% else %}
-    <div class="section-card" style="padding:0;overflow:auto;">
+    <div class="section-card tbl-wrap" style="padding:0;">
       <div style="padding:14px 16px 8px;font-size:12px;color:rgba(255,255,255,0.55);">Результат: {{ result_rows|length }} строк</div>
-      <table class="recent-table" style="margin:0;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;">
+      <table class="recent-table" style="margin:0;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;min-width:520px;">
         <thead><tr>{% for c in result_cols %}<th>{{ c }}</th>{% endfor %}</tr></thead>
         <tbody>
           {% for row in result_rows %}
