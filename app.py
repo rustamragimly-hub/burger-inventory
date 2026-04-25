@@ -47,6 +47,23 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 
 
+_PWA_HEAD = '''
+<link rel="icon" type="image/svg+xml" href="/static/icon.svg">
+<link rel="apple-touch-icon" href="/static/icon-180.png">
+<link rel="manifest" href="/static/manifest.json">
+<meta name="theme-color" content="#7c6cf0">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Calcio">
+'''
+
+
+@app.context_processor
+def _inject_pwa():
+    return {'pwa_head': _PWA_HEAD}
+
+
 @app.template_filter('qty')
 def _qty_fmt(v):
     """Округлить до 3 знаков и отформатировать с запятой (RU)."""
@@ -1054,6 +1071,10 @@ def revision():
 
     is_admin = (current_user.user and current_user.user.role == 'admin')
 
+    total_products = sum(len(items) for _, items in grouped_ordered)
+    counted_products = sum(1 for pid, q in qty_map.items() if q and q > 0)
+    progress_pct = int((counted_products / total_products) * 100) if total_products else 0
+
     return render_template_string(
         revision_html,
         org=org,
@@ -1065,6 +1086,9 @@ def revision():
         norms_map=norms_map,
         is_admin=is_admin,
         rev_status=(current_rev.status if current_rev else None),
+        total_products=total_products,
+        counted_products=counted_products,
+        progress_pct=progress_pct,
     )
 
 
@@ -1887,7 +1911,8 @@ register_html = '''<!DOCTYPE html>
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Регистрация компании — Spurt</title>
+<title>Регистрация компании — Calcio</title>
+{{ pwa_head|safe }}
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
 <style>''' + _BASE_CSS + '''</style>
 </head>
@@ -1941,7 +1966,8 @@ register_success_html = '''<!DOCTYPE html>
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Проверьте email — Spurt</title>
+<title>Проверьте email — Calcio</title>
+{{ pwa_head|safe }}
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
 <style>''' + _BASE_CSS + '''</style>
 </head>
@@ -1974,7 +2000,8 @@ message_html = '''<!DOCTYPE html>
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>{{ title }} — Spurt</title>
+<title>{{ title }} — Calcio</title>
+{{ pwa_head|safe }}
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
 <style>''' + _BASE_CSS + '''</style>
 </head>
@@ -1997,7 +2024,8 @@ placeholder_html = '''<!DOCTYPE html>
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>{{ title }} — Spurt</title>
+<title>{{ title }} — Calcio</title>
+{{ pwa_head|safe }}
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
 <style>''' + _BASE_CSS + '''
 .info-row {
@@ -2046,7 +2074,8 @@ login_html = '''<!DOCTYPE html>
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Вход — Spurt</title>
+<title>Вход — Calcio</title>
+{{ pwa_head|safe }}
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
 <style>''' + _BASE_CSS + '''
 .version { text-align: center; color: rgba(255,255,255,0.2); font-size: 11px; margin-top: 20px; }
@@ -2093,6 +2122,7 @@ admin_html = '''<!DOCTYPE html>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Админ панель — {{ org.name }}</title>
+{{ pwa_head|safe }}
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
 <style>
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; margin: 0; padding: 0; }
@@ -2231,9 +2261,12 @@ select.input option { background: #1d1635; color: white; }
 .inline-form { display: flex; gap: 8px; align-items: center; margin-top: 12px; flex-wrap: wrap; }
 .inline-form .input { flex: 1; min-width: 160px; }
 .empty {
-  padding: 24px; text-align: center; color: rgba(255,255,255,0.4); font-size: 13px;
+  padding: 32px 20px; text-align: center; color: rgba(255,255,255,0.4); font-size: 13px;
   border: 1px dashed rgba(255,255,255,0.12); border-radius: 14px;
 }
+.empty-icon { font-size: 42px; margin-bottom: 10px; opacity: 0.6; }
+.empty-title { color: rgba(255,255,255,0.8); font-size: 15px; font-weight: 600; margin-bottom: 4px; }
+.empty-hint { font-size: 12px; color: rgba(255,255,255,0.45); }
 .badge {
   display: inline-block; padding: 3px 10px; border-radius: 999px;
   font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;
@@ -2352,6 +2385,15 @@ select.input option { background: #1d1635; color: white; }
   font-size: 13px;
 }
 .pwd-box code { background: rgba(0,0,0,0.3); padding: 3px 8px; border-radius: 6px; font-size: 14px; }
+.cred-row { display: flex; align-items: center; gap: 8px; margin: 6px 0; flex-wrap: wrap; }
+.cred-label { color: rgba(255,255,255,0.6); font-size: 12px; min-width: 60px; }
+.copy-btn {
+  background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2);
+  color: #fde68a; padding: 4px 10px; border-radius: 8px; cursor: pointer;
+  font-size: 13px; transition: all .15s ease;
+}
+.copy-btn:hover { background: rgba(255,255,255,0.2); transform: scale(1.05); }
+.copy-btn:active { transform: scale(0.95); }
 .row-actions { display: flex; gap: 6px; }
 hr.soft { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 0; }
 @media (max-width: 600px) {
@@ -2399,11 +2441,12 @@ hr.soft { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 
 
   {% if new_user_pwd %}
   <div class="pwd-box">
-    🔑 <b>Данные для входа оператора «{{ new_user_name }}»</b> (передайте ему):<br>
-    📧 Email компании: <code>{{ org.owner_email }}</code><br>
-    👤 Логин: <code>{{ new_user_name }}</code><br>
-    🔐 Пароль: <code>{{ new_user_pwd }}</code><br>
-    <small>Сохраните сейчас — повторно пароль показан не будет.</small>
+    🔑 <b>Данные для входа оператора «{{ new_user_name }}»</b>:<br>
+    <div class="cred-row">📧 <span class="cred-label">Email:</span> <code id="cred-email">{{ org.owner_email }}</code> <button type="button" class="copy-btn" onclick="copyCred('cred-email')">📋</button></div>
+    <div class="cred-row">👤 <span class="cred-label">Логин:</span> <code id="cred-login">{{ new_user_name }}</code> <button type="button" class="copy-btn" onclick="copyCred('cred-login')">📋</button></div>
+    <div class="cred-row">🔐 <span class="cred-label">Пароль:</span> <code id="cred-pwd">{{ new_user_pwd }}</code> <button type="button" class="copy-btn" onclick="copyCred('cred-pwd')">📋</button></div>
+    <button type="button" class="btn btn-primary btn-small" onclick="copyAllCreds('{{ org.owner_email }}', '{{ new_user_name }}', '{{ new_user_pwd }}')" style="margin-top:8px;">📋 Скопировать всё</button>
+    <div style="font-size:11px;color:rgba(255,255,255,0.5);margin-top:6px;">Сохраните сейчас — повторно пароль показан не будет.</div>
   </div>
   {% endif %}
 
@@ -2421,7 +2464,11 @@ hr.soft { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 
         </div>
         {% endfor %}
       {% else %}
-        <div class="empty">Пока нет локаций</div>
+        <div class="empty">
+          <div class="empty-icon">📍</div>
+          <div class="empty-title">Пока нет локаций</div>
+          <div class="empty-hint">Добавьте локации (склад, кухня, бар) — без них нельзя начать ревизию.</div>
+        </div>
       {% endif %}
       <hr class="soft">
       <form method="post" action="/admin/locations/add" class="inline-form">
@@ -2445,7 +2492,11 @@ hr.soft { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 
         </div>
         {% endfor %}
       {% else %}
-        <div class="empty">Пока нет категорий</div>
+        <div class="empty">
+          <div class="empty-icon">🗂</div>
+          <div class="empty-title">Пока нет категорий</div>
+          <div class="empty-hint">Категории помогают группировать товары: «Молочка», «Овощи», «Мясо» и т.д.</div>
+        </div>
       {% endif %}
       <hr class="soft">
       <form method="post" action="/admin/categories/add" class="inline-form">
@@ -2509,7 +2560,11 @@ hr.soft { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 
         </div>
         {% endif %}
       {% else %}
-        <div class="empty">Пока нет товаров. Нажмите «+ Добавить товар» или используйте импорт.</div>
+        <div class="empty">
+          <div class="empty-icon">📦</div>
+          <div class="empty-title">Пока нет товаров</div>
+          <div class="empty-hint">Нажмите «+ Добавить товар» или загрузите Excel во вкладке «Импорт».</div>
+        </div>
       {% endif %}
     </div>
   </div>
@@ -2595,7 +2650,11 @@ hr.soft { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 
         <span id="norms-status" class="meta"></span>
       </div>
       {% else %}
-      <div class="empty">Сначала добавьте товары и локации.</div>
+      <div class="empty">
+        <div class="empty-icon">📏</div>
+        <div class="empty-title">Нет данных для норм</div>
+        <div class="empty-hint">Сначала добавьте локации и товары — тогда здесь появится таблица для задания норм.</div>
+      </div>
       {% endif %}
     </div>
   </div>
@@ -2662,7 +2721,11 @@ hr.soft { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 
         </div>
         {% endfor %}
       {% else %}
-        <div class="empty">Нет ожидающих запросов</div>
+        <div class="empty">
+          <div class="empty-icon">📨</div>
+          <div class="empty-title">Нет ожидающих запросов</div>
+          <div class="empty-hint">Здесь появятся ревизии операторов, которые ждут вашего подтверждения.</div>
+        </div>
       {% endif %}
     </div>
   </div>
@@ -2684,7 +2747,11 @@ hr.soft { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 
         </div>
         {% endfor %}
       {% else %}
-        <div class="empty">Нет завершённых ревизий</div>
+        <div class="empty">
+          <div class="empty-icon">🗂</div>
+          <div class="empty-title">Нет завершённых ревизий</div>
+          <div class="empty-hint">После подтверждения первой ревизии она появится здесь с возможностью скачать Excel-отчёт.</div>
+        </div>
       {% endif %}
     </div>
   </div>
@@ -2833,6 +2900,45 @@ async function saveNorms() {
   }
 }
 
+function adminToast(msg, type) {
+  const t = document.createElement('div');
+  t.textContent = msg;
+  t.style.cssText = 'position:fixed;bottom:30px;left:50%;transform:translateX(-50%);' +
+    'background:' + (type === 'error' ? '#ef4444' : '#22c55e') + ';color:#fff;' +
+    'padding:12px 22px;border-radius:14px;font-weight:600;font-size:14px;' +
+    'box-shadow:0 8px 24px rgba(0,0,0,0.4);z-index:9999;opacity:0;transition:opacity .2s ease;';
+  document.body.appendChild(t);
+  requestAnimationFrame(() => { t.style.opacity = '1'; });
+  setTimeout(() => { t.style.opacity = '0'; setTimeout(() => t.remove(), 250); }, 1800);
+}
+
+async function copyToClipboard(text) {
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      const ta = document.createElement('textarea');
+      ta.value = text; ta.style.position='fixed'; ta.style.left='-9999px';
+      document.body.appendChild(ta); ta.select();
+      document.execCommand('copy'); ta.remove();
+    }
+    return true;
+  } catch (e) { return false; }
+}
+
+async function copyCred(id) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const ok = await copyToClipboard(el.textContent.trim());
+  adminToast(ok ? '✓ Скопировано' : 'Не удалось скопировать', ok ? 'success' : 'error');
+}
+
+async function copyAllCreds(email, login, pwd) {
+  const text = 'Email: ' + email + '\nЛогин: ' + login + '\nПароль: ' + pwd;
+  const ok = await copyToClipboard(text);
+  adminToast(ok ? '✓ Все данные скопированы' : 'Не удалось скопировать', ok ? 'success' : 'error');
+}
+
 async function uploadImport(ev) {
   ev.preventDefault();
   const form = document.getElementById('import-form');
@@ -2872,6 +2978,7 @@ revision_html = '''<!DOCTYPE html>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>Ревизия — {{ org.name }}</title>
+{{ pwa_head|safe }}
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
 <style>
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent;}
@@ -2888,6 +2995,12 @@ header p{font-size:12px;color:rgba(255,255,255,0.4);margin-top:2px;}
 .tab{padding:8px 18px;border-radius:50px;font-weight:600;color:rgba(255,255,255,0.5);text-decoration:none;white-space:nowrap;font-size:14px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);transition:all 0.2s;}
 .tab.active{background:linear-gradient(135deg,rgba(124,108,240,0.5),rgba(168,85,247,0.4));border-color:rgba(124,108,240,0.5);color:#fff;box-shadow:0 4px 15px rgba(124,108,240,0.25);}
 .container{padding:0 16px;}
+.progress-wrap{margin:14px 0 4px;padding:14px 16px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:14px;}
+.progress-info{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;font-size:13px;color:rgba(255,255,255,0.7);}
+.progress-text b{color:#fff;font-weight:700;}
+.progress-pct{font-weight:700;color:#a855f7;font-size:15px;}
+.progress-bar{height:6px;background:rgba(255,255,255,0.08);border-radius:99px;overflow:hidden;}
+.progress-fill{height:100%;background:linear-gradient(90deg,#a855f7,#7c6cf0);border-radius:99px;transition:width .4s ease;box-shadow:0 0 8px rgba(124,108,240,0.5);}
 .search-wrap{position:sticky;top:60px;z-index:90;background:transparent;padding:10px 0;}
 .search-input{width:100%;padding:12px 16px;background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.1);border-radius:14px;color:#fff;font-size:15px;font-family:'Outfit',sans-serif;}
 .search-input::placeholder{color:rgba(255,255,255,0.3);}
@@ -2903,7 +3016,10 @@ header p{font-size:12px;color:rgba(255,255,255,0.4);margin-top:2px;}
 .badge-green{background:rgba(16,185,129,0.25);color:#6ee7b7;}
 .badge-yellow{background:rgba(251,191,36,0.25);color:#fcd34d;}
 .badge-red{background:rgba(239,68,68,0.25);color:#fca5a5;}
-.empty-msg{text-align:center;color:rgba(255,255,255,0.35);padding:40px 20px;font-size:14px;}
+.empty-msg{text-align:center;color:rgba(255,255,255,0.5);padding:48px 20px;font-size:14px;border:1px dashed rgba(255,255,255,0.12);border-radius:18px;margin:24px auto;max-width:420px;}
+.empty-msg .ico{font-size:52px;display:block;margin-bottom:14px;opacity:0.7;}
+.empty-msg .ttl{color:rgba(255,255,255,0.85);font-size:17px;font-weight:600;margin-bottom:6px;}
+.empty-msg .hint{font-size:13px;color:rgba(255,255,255,0.5);}
 .finish-btn{position:fixed;bottom:20px;left:20px;right:20px;background:linear-gradient(135deg,#7c6cf0,#a855f7);color:#fff;border:none;padding:16px;border-radius:16px;font-size:16px;font-weight:700;cursor:pointer;font-family:'Outfit',sans-serif;box-shadow:0 8px 24px rgba(124,108,240,0.45);z-index:90;}
 .finish-btn:disabled{opacity:0.5;cursor:not-allowed;}
 /* Modal */
@@ -2929,19 +3045,28 @@ header p{font-size:12px;color:rgba(255,255,255,0.4);margin-top:2px;}
 .calc-title{font-size:16px;font-weight:700;color:#fff;max-width:80%;}
 .calc-close{background:rgba(255,255,255,0.1);border:none;color:#fff;width:32px;height:32px;border-radius:8px;cursor:pointer;font-size:16px;}
 .calc-display{width:100%;font-size:30px;padding:10px 4px;text-align:right;border:none;border-bottom:2px solid rgba(255,255,255,0.1);color:#a5b4fc;background:transparent;font-family:'Outfit',monospace;margin-bottom:16px;}
-.calc-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;}
-.cbtn{padding:14px;border-radius:12px;border:none;font-size:18px;font-weight:500;cursor:pointer;font-family:'Outfit',sans-serif;touch-action:manipulation;}
+.calc-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;}
+.cbtn{padding:18px 4px;border-radius:14px;border:none;font-size:22px;font-weight:600;cursor:pointer;font-family:'Outfit',sans-serif;touch-action:manipulation;transition:transform 0.1s, background 0.1s;}
+.cbtn:active{transform:scale(0.94);}
 .cbtn-num{background:rgba(255,255,255,0.08);color:#fff;}
-.cbtn-num:active{background:rgba(255,255,255,0.15);}
-.cbtn-op{background:rgba(124,108,240,0.2);color:#a5b4fc;}
-.cbtn-op:active{background:rgba(124,108,240,0.35);}
-.cbtn-save{grid-column:span 2;background:linear-gradient(135deg,#7c6cf0,#a855f7);color:#fff;font-weight:700;font-size:15px;box-shadow:0 4px 15px rgba(124,108,240,0.4);}
-.total-row{margin-top:12px;text-align:center;font-size:14px;color:rgba(255,255,255,0.5);}
-.total-num{color:#a5b4fc;font-weight:700;}
-.values-list{margin:10px 0;max-height:90px;overflow-y:auto;border:1px solid rgba(255,255,255,0.08);border-radius:10px;background:rgba(255,255,255,0.04);display:none;}
-.val-item{display:flex;justify-content:space-between;align-items:center;padding:7px 12px;border-bottom:1px solid rgba(255,255,255,0.06);font-size:13px;color:rgba(255,255,255,0.8);}
-.val-item:last-child{border-bottom:none;}
-.del-val{background:none;border:none;color:rgba(239,68,68,0.7);cursor:pointer;font-size:16px;padding:0 4px;}
+.cbtn-num:active{background:rgba(255,255,255,0.18);}
+.cbtn-op{background:rgba(124,108,240,0.22);color:#a5b4fc;}
+.cbtn-op:active{background:rgba(124,108,240,0.4);}
+.cbtn-add{grid-column:span 2;background:rgba(168,85,247,0.25);color:#e9d5ff;font-weight:700;font-size:16px;letter-spacing:0.5px;}
+.cbtn-add:active{background:rgba(168,85,247,0.45);}
+.cbtn-save{grid-column:span 2;background:linear-gradient(135deg,#7c6cf0,#a855f7);color:#fff;font-weight:700;font-size:16px;box-shadow:0 4px 15px rgba(124,108,240,0.4);letter-spacing:0.5px;}
+@media (max-width:430px){.cbtn{padding:22px 4px;font-size:24px;}.cbtn-add,.cbtn-save{font-size:17px;padding:20px 4px;}}
+.total-row{margin-top:14px;text-align:center;font-size:15px;color:rgba(255,255,255,0.6);}
+.total-num{color:#a5b4fc;font-weight:700;font-size:18px;}
+/* Toast */
+.toast{position:fixed;left:50%;bottom:90px;transform:translateX(-50%) translateY(20px);padding:12px 20px;border-radius:12px;font-size:14px;font-weight:600;color:#fff;z-index:9999;pointer-events:none;opacity:0;transition:all 0.25s ease-out;backdrop-filter:blur(12px);box-shadow:0 8px 30px rgba(0,0,0,0.3);}
+.toast.active{opacity:1;transform:translateX(-50%) translateY(0);}
+.toast-success{background:rgba(34,197,94,0.85);}
+.toast-error{background:rgba(239,68,68,0.9);}
+.toast-info{background:rgba(124,108,240,0.85);}
+/* Prompt input in modals */
+.prompt-input{width:100%;padding:14px;font-size:18px;border-radius:10px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.06);color:#fff;text-align:center;font-family:'Outfit',sans-serif;margin:8px 0 4px;outline:none;}
+.prompt-input:focus{border-color:#7c6cf0;background:rgba(124,108,240,0.1);}
 .hist-log{margin-top:12px;border-top:1px solid rgba(255,255,255,0.08);padding-top:10px;}
 .hist-label{font-size:11px;color:rgba(255,255,255,0.35);margin-bottom:6px;}
 .hist-scroll{max-height:80px;overflow-y:auto;}
@@ -2966,7 +3091,11 @@ header p{font-size:12px;color:rgba(255,255,255,0.4);margin-top:2px;}
 </header>
 
 {% if not locations %}
-  <div class="empty-msg">🏠 Нет локаций.<br>Попросите администратора добавить локации.</div>
+  <div class="empty-msg">
+    <span class="ico">📍</span>
+    <div class="ttl">Нет локаций</div>
+    <div class="hint">Попросите администратора добавить локации (склад, кухня и т.д.).</div>
+  </div>
 {% else %}
 <div class="tabs">
   {% for loc in locations %}
@@ -2976,12 +3105,25 @@ header p{font-size:12px;color:rgba(255,255,255,0.4);margin-top:2px;}
 
 {% if selected %}
 <div class="container">
+  {% if total_products > 0 %}
+  <div class="progress-wrap">
+    <div class="progress-info">
+      <span class="progress-text">Посчитано <b>{{ counted_products }}</b> из <b>{{ total_products }}</b></span>
+      <span class="progress-pct">{{ progress_pct }}%</span>
+    </div>
+    <div class="progress-bar"><div class="progress-fill" style="width:{{ progress_pct }}%"></div></div>
+  </div>
+  {% endif %}
   <div class="search-wrap">
     <input id="search" class="search-input" type="text" placeholder="🔍 Поиск товара..." oninput="filterProducts()">
   </div>
 
   {% if not grouped %}
-    <div class="empty-msg">📦 Нет товаров.<br>Добавьте товары в админ-панели.</div>
+    <div class="empty-msg">
+      <span class="ico">📦</span>
+      <div class="ttl">Нет товаров</div>
+      <div class="hint">Добавьте товары в админ-панели или загрузите Excel-файл.</div>
+    </div>
   {% else %}
   <div id="productList">
   {% for cat, prods in grouped %}
@@ -3054,10 +3196,9 @@ header p{font-size:12px;color:rgba(255,255,255,0.4);margin-top:2px;}
     <button class="cbtn cbtn-op" onclick="clr()">C</button>
     <button class="cbtn cbtn-op" onclick="setOp('+')">+</button>
     <button class="cbtn cbtn-op" onclick="calculate()">=</button>
-    <button class="cbtn cbtn-op" onclick="addToTotal()">+∑</button>
-    <button class="cbtn cbtn-save" onclick="saveResult()">СОХРАНИТЬ</button>
+    <button class="cbtn cbtn-add" onclick="addToTotal()">+ ДОБАВИТЬ</button>
+    <button class="cbtn cbtn-save" onclick="closeCalcDone()">✓ ГОТОВО</button>
   </div>
-  <div id="addedValuesList" class="values-list"></div>
   <div class="total-row">Итого: <span id="total" class="total-num">0</span> <span id="unitLabel"></span></div>
   <div class="hist-log">
     <div class="hist-label">История (текущая сессия):</div>
@@ -3091,7 +3232,7 @@ header p{font-size:12px;color:rgba(255,255,255,0.4);margin-top:2px;}
 
 <script>
 let curProdId = null, curLocId = null, curUnit = '';
-let val = '0', op = null, prev = null, total = 0, addedValues = [];
+let val = '0', op = null, prev = null, total = 0;
 
 function filterProducts() {
   const q = document.getElementById('search').value.toLowerCase();
@@ -3107,12 +3248,11 @@ function filterProducts() {
 
 async function openCalc(prodId, locId, name, unit) {
   curProdId = prodId; curLocId = locId; curUnit = unit;
-  val = '0'; op = null; prev = null; total = 0; addedValues = [];
+  val = '0'; op = null; prev = null; total = 0;
   document.getElementById('calcTitle').innerText = name;
   document.getElementById('unitLabel').innerText = unit;
   document.getElementById('calcDisplay').value = '0';
   document.getElementById('total').innerText = '0';
-  renderValuesList();
   await loadHistory(prodId, locId);
   document.getElementById('calcModal').classList.add('active');
 }
@@ -3123,6 +3263,10 @@ async function loadHistory(prodId, locId) {
     const data = await res.json();
     const el = document.getElementById('histLog');
     const items = (data && data.items) ? data.items : (Array.isArray(data) ? data : []);
+    if (data && typeof data.total === 'number') {
+      total = data.total;
+      document.getElementById('total').innerText = fmt(total);
+    }
     if (!items.length) { el.innerHTML = '<span style="color:rgba(255,255,255,0.3)">Пусто</span>'; return; }
     el.innerHTML = items.map(h =>
       `<div class="hist-item">
@@ -3136,25 +3280,82 @@ async function loadHistory(prodId, locId) {
   } catch(e) { }
 }
 
+function showToast(msg, type) {
+  let t = document.getElementById('toast');
+  if (!t) {
+    t = document.createElement('div');
+    t.id = 'toast';
+    t.className = 'toast';
+    document.body.appendChild(t);
+  }
+  t.textContent = msg;
+  t.className = 'toast toast-' + (type || 'info') + ' active';
+  clearTimeout(window._toastTimer);
+  window._toastTimer = setTimeout(() => { t.className = 'toast'; }, 1800);
+}
+
+function uiConfirm(message) {
+  return new Promise(resolve => {
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-center active';
+    overlay.innerHTML = `
+      <div class="modal-box">
+        <div class="icon">❓</div>
+        <h2>${message}</h2>
+        <div class="modal-btns">
+          <button class="mbtn mbtn-no">Нет</button>
+          <button class="mbtn mbtn-yes">Да</button>
+        </div>
+      </div>`;
+    overlay.querySelector('.mbtn-no').onclick = () => { document.body.removeChild(overlay); resolve(false); };
+    overlay.querySelector('.mbtn-yes').onclick = () => { document.body.removeChild(overlay); resolve(true); };
+    document.body.appendChild(overlay);
+  });
+}
+
+function uiPrompt(message, defaultVal) {
+  return new Promise(resolve => {
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-center active';
+    overlay.innerHTML = `
+      <div class="modal-box">
+        <div class="icon">✎</div>
+        <h2>${message}</h2>
+        <input class="prompt-input" type="text" inputmode="decimal" value="${defaultVal || ''}">
+        <div class="modal-btns">
+          <button class="mbtn mbtn-no">Отмена</button>
+          <button class="mbtn mbtn-yes">OK</button>
+        </div>
+      </div>`;
+    const inp = overlay.querySelector('input');
+    overlay.querySelector('.mbtn-no').onclick = () => { document.body.removeChild(overlay); resolve(null); };
+    overlay.querySelector('.mbtn-yes').onclick = () => { const v = inp.value; document.body.removeChild(overlay); resolve(v); };
+    inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') overlay.querySelector('.mbtn-yes').click(); });
+    document.body.appendChild(overlay);
+    setTimeout(() => { inp.focus(); inp.select(); }, 50);
+  });
+}
+
 async function editHistItem(itemId, currentQty) {
-  const raw = prompt('Новое значение:', String(currentQty).replace('.', ','));
+  const raw = await uiPrompt('Новое значение:', String(currentQty).replace('.', ','));
   if (raw === null) return;
   const n = parseNum(raw);
-  if (isNaN(n) || n <= 0) { alert('Введите корректное число'); return; }
+  if (isNaN(n) || n <= 0) { showToast('Введите корректное число', 'error'); return; }
   const fd = new FormData();
   fd.append('quantity', round3(n));
   const res = await fetch(`/revision/edit_item/${itemId}`, {method: 'POST', body: fd});
   const data = await res.json();
-  if (!data.ok) { alert('Ошибка: ' + (data.error || '')); return; }
+  if (!data.ok) { showToast('Ошибка: ' + (data.error || ''), 'error'); return; }
   await loadHistory(curProdId, curLocId);
-  location.reload();
+  showToast('Изменено', 'success');
 }
 
 async function deleteHistItem(itemId) {
-  if (!confirm('Удалить запись?')) return;
+  const ok = await uiConfirm('Удалить запись?');
+  if (!ok) return;
   await fetch(`/revision/delete_item/${itemId}`, {method: 'POST'});
   await loadHistory(curProdId, curLocId);
-  location.reload();
+  showToast('Удалено', 'success');
 }
 
 function closeCalc() { document.getElementById('calcModal').classList.remove('active'); }
@@ -3177,36 +3378,44 @@ function calculate() {
   }
 }
 function clr() { val='0'; prev=null; op=null; document.getElementById('calcDisplay').value='0'; }
-function addToTotal() {
+function fmt(n){ return String(n).replace('.', ','); }
+
+async function addToTotal() {
+  // Автосохранение: каждое +ДОБАВИТЬ сразу пишется на сервер
   calculate();
-  const n = parseNum(val);
-  if(!isNaN(n) && n !== 0) { addedValues.push(n); renderValuesList(); }
+  const n = round3(parseNum(val));
+  if(isNaN(n) || n <= 0) { showToast('Введите число', 'error'); return; }
+  await sendToServer(n);
   val='0'; document.getElementById('calcDisplay').value='0';
 }
-function fmt(n){ return String(n).replace('.', ','); }
-function renderValuesList() {
-  const list = document.getElementById('addedValuesList');
-  if (!addedValues.length) { list.style.display='none'; list.innerHTML=''; total=0; }
-  else {
-    list.style.display='block';
-    list.innerHTML = addedValues.map((v,i) =>
-      `<div class="val-item"><span>${fmt(v)}</span><button class="del-val" onclick="removeValue(${i})">×</button></div>`
-    ).join('');
-    total = Math.round(addedValues.reduce((a,b)=>a+b,0)*1000)/1000;
-  }
-  document.getElementById('total').innerText = fmt(total);
-}
-function removeValue(i) { addedValues.splice(i,1); renderValuesList(); }
 
-async function saveResult() {
-  let n = addedValues.length ? total : parseNum(val);
-  if(isNaN(n)||n<=0){alert('Введите корректное число');return;}
-  n = round3(n);
+async function sendToServer(n) {
   const fd = new FormData();
   fd.append('product_id', curProdId);
   fd.append('location_id', curLocId);
   fd.append('count', n);
-  await fetch('/revision/add', {method:'POST', body:fd});
+  try {
+    const res = await fetch('/revision/add', {method:'POST', body:fd});
+    const data = await res.json();
+    if (data.ok) {
+      total = round3((total || 0) + n);
+      document.getElementById('total').innerText = fmt(total);
+      await loadHistory(curProdId, curLocId);
+      showToast('+' + fmt(n) + ' сохранено', 'success');
+    } else {
+      showToast('Ошибка: ' + (data.error || ''), 'error');
+    }
+  } catch(e) {
+    showToast('Ошибка сети', 'error');
+  }
+}
+
+async function closeCalcDone() {
+  // Если есть несохранённое значение на дисплее — сохраняем перед закрытием
+  const n = round3(parseNum(val));
+  if (!isNaN(n) && n > 0) {
+    await sendToServer(n);
+  }
   closeCalc();
   location.reload();
 }
@@ -3406,7 +3615,8 @@ owner_login_html = '''<!DOCTYPE html>
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Панель владельца — Spurt</title>
+<title>Панель владельца — Calcio</title>
+{{ pwa_head|safe }}
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
 <style>''' + _BASE_CSS + '''
 </style>
@@ -3441,7 +3651,8 @@ owner_dashboard_html = '''<!DOCTYPE html>
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Owner Dashboard — Spurt</title>
+<title>Owner Dashboard — Calcio</title>
+{{ pwa_head|safe }}
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
 <style>''' + _OWNER_BASE_CSS + '''</style>
 </head>
@@ -3551,7 +3762,8 @@ owner_orgs_html = '''<!DOCTYPE html>
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Компании — Owner — Spurt</title>
+<title>Компании — Owner — Calcio</title>
+{{ pwa_head|safe }}
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
 <style>''' + _OWNER_BASE_CSS + '''</style>
 </head>
@@ -3714,6 +3926,27 @@ with app.app_context():
             conn.commit()
     except Exception as _e:
         print(f'⚠️  Миграция excel_template: {_e}')
+
+    # Миграция: переименовываем admin-пользователя Мобара в TimurSaipov
+    try:
+        _mobar_email = os.environ.get('MOBAR_EMAIL')
+        if _mobar_email:
+            _mobar_org = Organization.query.filter_by(owner_email=_mobar_email).first()
+            if _mobar_org:
+                _admin_user = User.query.filter_by(
+                    org_id=_mobar_org.id, username='admin', role='admin'
+                ).first()
+                if _admin_user:
+                    _exists = User.query.filter_by(
+                        org_id=_mobar_org.id, username='TimurSaipov'
+                    ).first()
+                    if not _exists:
+                        _admin_user.username = 'TimurSaipov'
+                        db.session.commit()
+                        print(f'✅ Мобар admin → TimurSaipov')
+    except Exception as _e:
+        db.session.rollback()
+        print(f'⚠️  Миграция Мобар username: {_e}')
 
     # Автосоздание owner из переменных окружения (для Render/VPS)
     owner_email = os.environ.get('OWNER_EMAIL')
