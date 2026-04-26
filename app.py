@@ -4414,6 +4414,9 @@ body {
 }
 .mobile-card .org-name { font-size: 15px; font-weight: 700; margin-bottom: 4px; }
 .mobile-card .org-email { font-size: 12px; color: rgba(255,255,255,0.5); margin-bottom: 10px; }
+.org-card-link { display: block; color: inherit; text-decoration: none; padding: 2px 0 6px; margin: -2px 0 4px; border-radius: 8px; }
+.org-card-link:active { background: rgba(124,108,240,0.08); }
+.card-chev { float: right; color: rgba(255,255,255,0.3); font-weight: 400; font-size: 18px; }
 .mobile-card .details { font-size: 12px; color: rgba(255,255,255,0.6); margin-bottom: 8px; display: flex; gap: 12px; flex-wrap: wrap; }
 .mobile-card .actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
 .owner-nav { flex-wrap: wrap; row-gap: 6px; }
@@ -4471,6 +4474,91 @@ textarea.broadcast-area:focus { outline: none; border-color: rgba(124,108,240,0.
 .owner-nav::-webkit-scrollbar { display: none; }
 .owner-nav { scrollbar-width: none; }
 
+/* === НИЖНЯЯ НАВИГАЦИЯ (мобильная) === */
+.bottom-nav {
+    display: none;
+    position: fixed; bottom: 0; left: 0; right: 0;
+    background: rgba(13,11,22,0.96);
+    backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+    border-top: 1px solid rgba(255,255,255,0.1);
+    padding: 6px 4px calc(6px + env(safe-area-inset-bottom, 0px));
+    z-index: 99;
+    justify-content: space-around;
+    box-shadow: 0 -8px 24px rgba(0,0,0,0.4);
+}
+.btab {
+    flex: 1;
+    display: flex; flex-direction: column; align-items: center;
+    gap: 2px; padding: 6px 2px; border-radius: 12px;
+    background: none; border: none;
+    color: rgba(255,255,255,0.55);
+    font-family: 'Outfit', sans-serif;
+    text-decoration: none; cursor: pointer;
+    min-height: 50px;
+    transition: color 0.15s;
+}
+.btab:active { background: rgba(124,108,240,0.1); }
+.btab.active { color: #a78bfa; }
+.btab .bicon { font-size: 22px; line-height: 1; }
+.btab .blabel { font-size: 10px; font-weight: 600; }
+
+/* === BOTTOM SHEET «ЕЩЁ» === */
+.more-modal {
+    position: fixed; inset: 0; z-index: 100;
+    pointer-events: none; visibility: hidden;
+}
+.more-modal.open { pointer-events: auto; visibility: visible; }
+.more-overlay {
+    position: absolute; inset: 0;
+    background: rgba(0,0,0,0.55);
+    opacity: 0;
+    transition: opacity 0.25s;
+}
+.more-modal.open .more-overlay { opacity: 1; }
+.more-sheet {
+    position: absolute; bottom: 0; left: 0; right: 0;
+    background: linear-gradient(180deg, #1d1635 0%, #13111c 100%);
+    border-top: 1px solid rgba(255,255,255,0.12);
+    border-radius: 24px 24px 0 0;
+    padding: 8px 18px calc(20px + env(safe-area-inset-bottom, 0px));
+    transform: translateY(100%);
+    transition: transform 0.3s cubic-bezier(0.32, 0.72, 0, 1);
+    box-shadow: 0 -12px 32px rgba(0,0,0,0.5);
+}
+.more-modal.open .more-sheet { transform: translateY(0); }
+.more-handle {
+    width: 44px; height: 4px;
+    background: rgba(255,255,255,0.3);
+    border-radius: 2px; margin: 4px auto 14px;
+}
+.more-title {
+    font-size: 11px;
+    color: rgba(255,255,255,0.5);
+    text-transform: uppercase; letter-spacing: 0.8px;
+    margin-bottom: 14px; font-weight: 700;
+}
+.more-grid {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px;
+}
+.mtab {
+    display: flex; flex-direction: column; align-items: center;
+    gap: 8px; padding: 18px 8px; border-radius: 16px;
+    background: rgba(255,255,255,0.06);
+    border: 1px solid rgba(255,255,255,0.08);
+    text-decoration: none;
+    color: rgba(255,255,255,0.85);
+    font-size: 12px; font-weight: 600;
+    text-align: center;
+    transition: all 0.15s;
+}
+.mtab:active { transform: scale(0.97); background: rgba(255,255,255,0.1); }
+.mtab.active {
+    background: rgba(124,108,240,0.22);
+    border-color: rgba(124,108,240,0.4);
+    color: #a78bfa;
+}
+.mtab .micon { font-size: 26px; line-height: 1; }
+
 /* === ПЛАНШЕТ (≤900px) === */
 @media (max-width: 900px) {
     .page-content { padding: 16px 14px 80px; }
@@ -4489,6 +4577,11 @@ textarea.broadcast-area:focus { outline: none; border-color: rgba(124,108,240,0.
 
 /* === ТЕЛЕФОН (≤640px) === */
 @media (max-width: 640px) {
+    /* Переключение nav: скрываем верхнюю, показываем нижнюю */
+    .owner-nav { display: none; }
+    .bottom-nav { display: flex; }
+    .page-content { padding-bottom: 90px; }
+
     .metrics-grid, .metrics-grid-8 { grid-template-columns: repeat(2, 1fr); gap: 10px; margin-bottom: 16px; }
     .metric-card { padding: 14px; border-radius: 14px; }
     .metric-num { font-size: 24px; }
@@ -4502,6 +4595,8 @@ textarea.broadcast-area:focus { outline: none; border-color: rgba(124,108,240,0.
     .audit-table { font-size: 11px; min-width: 560px; }
     .recent-table { min-width: 480px; }
     .orgs-table { min-width: 720px; }
+    /* Sticky search */
+    .search-box { position: sticky; top: 8px; z-index: 5; backdrop-filter: blur(10px); background: rgba(20,15,40,0.85); }
     /* Алерты: вертикальная компоновка */
     .alert-row { flex-direction: column; align-items: stretch; gap: 6px; padding: 10px 0; }
     .alert-row > div:first-child { width: 100%; }
@@ -4542,6 +4637,77 @@ textarea.broadcast-area:focus { outline: none; border-color: rgba(124,108,240,0.
     .metric-card { padding: 12px; }
 }
 '''
+
+# Список вкладок для top + bottom nav
+_OWNER_TABS = [
+    ('dashboard', '/owner', '📊', 'Дашборд'),
+    ('orgs', '/owner/orgs', '🏢', 'Компании'),
+    ('alerts', '/owner/alerts', '⚠️', 'Алерты'),
+    ('tickets', '/owner/tickets', '🎫', 'Тикеты'),
+    ('audit', '/owner/audit', '📋', 'Аудит'),
+    ('broadcast', '/owner/broadcast', '📨', 'Рассылка'),
+    ('catalog', '/owner/catalog', '📦', 'Каталог'),
+    ('backup', '/owner/backup', '🗄', 'Бэкап'),
+    ('health', '/owner/health', '🏥', 'Health'),
+    ('sql', '/owner/sql', '🔧', 'SQL'),
+]
+# Какие 4 главные показываются в нижнем баре, остальные — в "Ещё"
+_OWNER_PRIMARY_TABS = ['dashboard', 'orgs', 'alerts', 'tickets']
+
+
+def _owner_nav(active):
+    """Возвращает HTML с верхним и нижним nav + bottom-sheet «Ещё»."""
+    primary = set(_OWNER_PRIMARY_TABS)
+    # Верхний nav (виден на планшете+ через CSS)
+    top = ['<nav class="owner-nav">']
+    for key, url, icon, label in _OWNER_TABS:
+        cls = 'nav-tab active' if key == active else 'nav-tab'
+        top.append(f'<a class="{cls}" href="{url}">{icon} {label}</a>')
+    top.append('</nav>')
+
+    # Нижний nav (виден на телефоне)
+    bottom = ['<nav class="bottom-nav">']
+    for key in _OWNER_PRIMARY_TABS:
+        td = next(t for t in _OWNER_TABS if t[0] == key)
+        cls = 'btab active' if key == active else 'btab'
+        bottom.append(
+            f'<a class="{cls}" href="{td[1]}">'
+            f'<span class="bicon">{td[2]}</span>'
+            f'<span class="blabel">{td[3]}</span></a>'
+        )
+    is_more_active = active not in primary
+    more_cls = 'btab active' if is_more_active else 'btab'
+    bottom.append(
+        f'<button class="{more_cls}" type="button" onclick="ownerToggleMore()">'
+        '<span class="bicon">⋯</span><span class="blabel">Ещё</span></button>'
+    )
+    bottom.append('</nav>')
+
+    # Bottom sheet с остальными вкладками
+    sheet = ['<div class="more-modal" id="moreModal">',
+             '<div class="more-overlay" onclick="ownerToggleMore()"></div>',
+             '<div class="more-sheet">',
+             '<div class="more-handle"></div>',
+             '<div class="more-title">Ещё</div>',
+             '<div class="more-grid">']
+    for key, url, icon, label in _OWNER_TABS:
+        if key in primary:
+            continue
+        cls = 'mtab active' if key == active else 'mtab'
+        sheet.append(
+            f'<a class="{cls}" href="{url}">'
+            f'<span class="micon">{icon}</span><span>{label}</span></a>'
+        )
+    sheet.append('</div></div></div>')
+
+    js = '''<script>
+function ownerToggleMore() {
+  var m = document.getElementById('moreModal');
+  if (m) m.classList.toggle('open');
+}
+</script>'''
+    return ''.join(top) + ''.join(bottom) + ''.join(sheet) + js
+
 
 owner_login_html = '''<!DOCTYPE html>
 <html lang="ru">
@@ -4610,20 +4776,7 @@ owner_dashboard_html = '''<!DOCTYPE html>
 </div>
 {% endif %}
 {% endwith %}
-
-<nav class="owner-nav">
-  <a class="nav-tab active" href="/owner">📊 Дашборд</a>
-  <a class="nav-tab" href="/owner/orgs">🏢 Компании</a>
-  <a class="nav-tab" href="/owner/alerts">⚠️ Алерты {% if inactive_count or open_tickets %}<span style="background:#ef4444;color:white;padding:1px 7px;border-radius:99px;font-size:10px;margin-left:4px;">{{ inactive_count + open_tickets }}</span>{% endif %}</a>
-  <a class="nav-tab" href="/owner/tickets">🎫 Тикеты {% if open_tickets %}<span style="background:#ef4444;color:white;padding:1px 7px;border-radius:99px;font-size:10px;margin-left:4px;">{{ open_tickets }}</span>{% endif %}</a>
-  <a class="nav-tab" href="/owner/audit">📋 Аудит</a>
-  <a class="nav-tab" href="/owner/broadcast">📨 Рассылка</a>
-  <a class="nav-tab" href="/owner/catalog">📦 Каталог</a>
-  <a class="nav-tab" href="/owner/backup">🗄 Бэкап</a>
-  <a class="nav-tab" href="/owner/health">🏥 Health</a>
-  <a class="nav-tab" href="/owner/sql">🔧 SQL</a>
-</nav>
-
+''' + _owner_nav('dashboard') + '''
 <div class="page-content">
 
   <div class="metrics-grid-8">
@@ -4780,20 +4933,7 @@ owner_orgs_html = '''<!DOCTYPE html>
 </div>
 {% endif %}
 {% endwith %}
-
-<nav class="owner-nav">
-  <a class="nav-tab" href="/owner">📊 Дашборд</a>
-  <a class="nav-tab active" href="/owner/orgs">🏢 Компании</a>
-  <a class="nav-tab" href="/owner/alerts">⚠️ Алерты</a>
-  <a class="nav-tab" href="/owner/tickets">🎫 Тикеты</a>
-  <a class="nav-tab" href="/owner/audit">📋 Аудит</a>
-  <a class="nav-tab" href="/owner/broadcast">📨 Рассылка</a>
-  <a class="nav-tab" href="/owner/catalog">📦 Каталог</a>
-  <a class="nav-tab" href="/owner/backup">🗄 Бэкап</a>
-  <a class="nav-tab" href="/owner/health">🏥 Health</a>
-  <a class="nav-tab" href="/owner/sql">🔧 SQL</a>
-</nav>
-
+''' + _owner_nav('orgs') + '''
 <div class="page-content">
 
   <input class="search-box" type="text" id="searchBox" placeholder="🔍 Поиск по названию или email..." oninput="filterOrgs(this.value)">
@@ -4859,8 +4999,10 @@ owner_orgs_html = '''<!DOCTYPE html>
   <div class="mobile-cards" id="mobileCards">
   {% for r in org_rows %}
   <div class="mobile-card org-row" data-search="{{ r.name|lower }} {{ r.email|lower }}">
-    <div class="org-name">{{ r.name }}</div>
-    <div class="org-email">{{ r.email }}</div>
+    <a class="org-card-link" href="/owner/orgs/{{ r.id }}">
+      <div class="org-name">{{ r.name }} <span class="card-chev">›</span></div>
+      <div class="org-email">{{ r.email }}</div>
+    </a>
     <div class="details">
       <span><span class="badge badge-{{ r.plan }}">{{ r.plan }}</span></span>
       <span>До: {{ r.ends }}</span>
@@ -4911,30 +5053,6 @@ function filterOrgs(q) {
 </script>
 </body>
 </html>'''
-
-
-# Общий nav-блок для всех owner-страниц (вставляется через replace по active-классу)
-_OWNER_NAV_TEMPLATE = '''
-<nav class="owner-nav">
-  <a class="nav-tab __ACTIVE_dashboard__" href="/owner">📊 Дашборд</a>
-  <a class="nav-tab __ACTIVE_orgs__" href="/owner/orgs">🏢 Компании</a>
-  <a class="nav-tab __ACTIVE_alerts__" href="/owner/alerts">⚠️ Алерты</a>
-  <a class="nav-tab __ACTIVE_tickets__" href="/owner/tickets">🎫 Тикеты</a>
-  <a class="nav-tab __ACTIVE_audit__" href="/owner/audit">📋 Аудит</a>
-  <a class="nav-tab __ACTIVE_broadcast__" href="/owner/broadcast">📨 Рассылка</a>
-  <a class="nav-tab __ACTIVE_catalog__" href="/owner/catalog">📦 Каталог</a>
-  <a class="nav-tab __ACTIVE_backup__" href="/owner/backup">🗄 Бэкап</a>
-  <a class="nav-tab __ACTIVE_health__" href="/owner/health">🏥 Health</a>
-  <a class="nav-tab __ACTIVE_sql__" href="/owner/sql">🔧 SQL</a>
-</nav>
-'''
-
-def _owner_nav(active):
-    nav = _OWNER_NAV_TEMPLATE
-    for key in ('dashboard', 'orgs', 'alerts', 'tickets', 'audit', 'broadcast',
-                'catalog', 'backup', 'health', 'sql'):
-        nav = nav.replace(f'__ACTIVE_{key}__', 'active' if key == active else '')
-    return nav
 
 
 _OWNER_PAGE_HEAD = '''<!DOCTYPE html>
@@ -5051,7 +5169,7 @@ owner_org_detail_html = (
   <div class="section-card">
     <div class="section-title">💰 Цена подписки</div>
     <form method="post" action="/owner/orgs/{{ org.id }}/price" class="input-row">
-      <input type="number" name="monthly_price" min="0" step="100" value="{{ org.monthly_price or 0 }}" class="grow" placeholder="Стоимость в ₽">
+      <input type="number" inputmode="numeric" pattern="[0-9]*" name="monthly_price" min="0" step="100" value="{{ org.monthly_price or 0 }}" class="grow" placeholder="Стоимость в ₽">
       <button type="submit" class="btn-primary-sm">Сохранить</button>
     </form>
     <div style="font-size:12px;color:rgba(255,255,255,0.5);">Используется в расчёте MRR на дашборде.</div>
