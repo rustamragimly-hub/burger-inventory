@@ -4580,17 +4580,22 @@ textarea.broadcast-area:focus { outline: none; border-color: rgba(124,108,240,0.
     /* Переключение nav: скрываем верхнюю, показываем нижнюю */
     .owner-nav { display: none; }
     .bottom-nav { display: flex; }
-    .page-content { padding-bottom: 90px; }
+    .page-content { padding: 12px 12px 90px; }
 
-    .metrics-grid, .metrics-grid-8 { grid-template-columns: repeat(2, 1fr); gap: 10px; margin-bottom: 16px; }
-    .metric-card { padding: 14px; border-radius: 14px; }
-    .metric-num { font-size: 24px; }
-    .metric-num.small { font-size: 19px; }
-    .metric-label { font-size: 11px; margin-top: 4px; }
-    .section-card { padding: 14px; border-radius: 14px; margin-bottom: 14px; }
-    .section-title { font-size: 14px; margin-bottom: 10px; }
-    .chart-total { font-size: 20px; }
-    .spark { height: 50px; }
+    /* Компактнее метрики */
+    .metrics-grid, .metrics-grid-8 { grid-template-columns: repeat(2, 1fr); gap: 8px; margin-bottom: 10px; }
+    .metric-card { padding: 10px 12px; border-radius: 12px; }
+    .metric-num { font-size: 22px; }
+    .metric-num.small { font-size: 18px; }
+    .metric-label { font-size: 10.5px; margin-top: 2px; line-height: 1.25; }
+    /* Компактнее карточки секций */
+    .section-card { padding: 12px; border-radius: 14px; margin-bottom: 10px; }
+    .section-title { font-size: 13px; margin-bottom: 8px; }
+    .charts-grid { gap: 10px; margin-bottom: 10px; }
+    .chart-title { font-size: 12px; margin-bottom: 4px; }
+    .chart-total { font-size: 18px; margin-bottom: 4px; }
+    .spark { height: 40px; }
+    .dash-bottom-grid { gap: 10px; }
     /* Таблицы — горизонтальный скролл */
     .audit-table { font-size: 11px; min-width: 560px; }
     .recent-table { min-width: 480px; }
@@ -4812,6 +4817,10 @@ owner_dashboard_html = '''<!DOCTYPE html>
       <div class="metric-num small">{{ total_revisions }}</div>
       <div class="metric-label">Завершённых ревизий</div>
     </div>
+    <div class="metric-card">
+      <div class="metric-num small">{{ activity_today }}</div>
+      <div class="metric-label">Активность сегодня</div>
+    </div>
   </div>
 
   <div class="charts-grid">
@@ -4847,55 +4856,48 @@ owner_dashboard_html = '''<!DOCTYPE html>
     </div>
   </div>
 
+  {% if expiring_list %}
   <div class="section-card">
     <div class="section-title">⚠️ Trial заканчивается скоро (3 дня)</div>
-    {% if expiring_list %}
-      {% for item in expiring_list %}
-      <div class="expiring-row">
-        <div>
-          <div class="expiring-name">{{ item.name }}</div>
-          <div class="expiring-email">{{ item.email }}</div>
-        </div>
-        <div style="display:flex;align-items:center;gap:8px;">
-          <span class="days-badge">{{ item.days_left }} д.</span>
-          <form method="post" action="/owner/orgs/{{ item.id }}/extend_trial" style="display:inline;">
-            <button class="btn-sm btn-extend" type="submit">Продлить +7д</button>
-          </form>
-        </div>
+    {% for item in expiring_list %}
+    <div class="expiring-row">
+      <div>
+        <div class="expiring-name">{{ item.name }}</div>
+        <div class="expiring-email">{{ item.email }}</div>
       </div>
-      {% endfor %}
-    {% else %}
-      <div style="color:rgba(255,255,255,0.4);font-size:14px;">Нет компаний с истекающим trial.</div>
-    {% endif %}
+      <div style="display:flex;align-items:center;gap:8px;">
+        <span class="days-badge">{{ item.days_left }} д.</span>
+        <form method="post" action="/owner/orgs/{{ item.id }}/extend_trial" style="display:inline;">
+          <button class="btn-sm btn-extend" type="submit">Продлить +7д</button>
+        </form>
+      </div>
+    </div>
+    {% endfor %}
   </div>
+  {% endif %}
 
-  <div class="dash-bottom-grid">
-    <div class="section-card">
-      <div class="section-title">🆕 Последние регистрации</div>
-      <div class="tbl-wrap">
-      <table class="recent-table">
-        <thead><tr>
-          <th>Компания</th><th>Email</th><th>Тариф</th><th>Дата</th>
-        </tr></thead>
-        <tbody>
-        {% for r in recent_list %}
-        <tr>
-          <td style="font-weight:600;">{{ r.name }}</td>
-          <td style="color:rgba(255,255,255,0.6);">{{ r.email }}</td>
-          <td><span class="badge badge-{{ r.plan }}">{{ r.plan }}</span></td>
-          <td style="color:rgba(255,255,255,0.5);">{{ r.created_at }}</td>
-        </tr>
-        {% endfor %}
-        </tbody>
-      </table>
-      </div>
-    </div>
-    <div class="section-card" style="display:flex;flex-direction:column;justify-content:center;align-items:center;">
-      <div class="section-title" style="text-align:center;">📦 Активность сегодня</div>
-      <div style="font-size:44px;font-weight:700;color:white;margin:12px 0;line-height:1;">{{ activity_today }}</div>
-      <div style="font-size:13px;color:rgba(255,255,255,0.5);text-align:center;">позиций добавлено в ревизии</div>
+  {% if recent_list %}
+  <div class="section-card">
+    <div class="section-title">🆕 Последние регистрации</div>
+    <div class="tbl-wrap">
+    <table class="recent-table">
+      <thead><tr>
+        <th>Компания</th><th>Email</th><th>Тариф</th><th>Дата</th>
+      </tr></thead>
+      <tbody>
+      {% for r in recent_list %}
+      <tr>
+        <td style="font-weight:600;">{{ r.name }}</td>
+        <td style="color:rgba(255,255,255,0.6);">{{ r.email }}</td>
+        <td><span class="badge badge-{{ r.plan }}">{{ r.plan }}</span></td>
+        <td style="color:rgba(255,255,255,0.5);">{{ r.created_at }}</td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
     </div>
   </div>
+  {% endif %}
 
 </div>
 </body>
