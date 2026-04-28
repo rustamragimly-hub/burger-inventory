@@ -1,6 +1,6 @@
 {
-  "name": "Calcio — Инвентаризация",
-  "short_name": "Calcio",
+  "name": "Revisi — Инвентаризация",
+  "short_name": "Revisi",
   "description": "Учёт и ревизия товаров",
   "start_url": "/",
   "display": "standalone",

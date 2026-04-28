@@ -16,7 +16,7 @@ class Config:
     # База данных
     SQLALCHEMY_DATABASE_URI = os.environ.get(
         'DATABASE_URL',
-        'postgresql://ragimly@localhost:5432/spurt_dev'
+        'postgresql://ragimly@localhost:5432/revisi_dev'
     )
     SQLALCHEMY_TRACK_MODIFICATIONS = False
 

@@ -1,5 +1,5 @@
 """
-Spurt — мульти-тенантная система инвентаризации.
+Revisi — мульти-тенантная система инвентаризации.
 Фаза 1: Аутентификация и регистрация компаний.
 """
 from flask import (
@@ -59,7 +59,7 @@ _PWA_HEAD = '''
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="Calcio">
+<meta name="apple-mobile-web-app-title" content="Revisi">
 '''
 
 _OWNER_PWA_HEAD = '''
@@ -70,7 +70,7 @@ _OWNER_PWA_HEAD = '''
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="Calcio Owner">
+<meta name="apple-mobile-web-app-title" content="Revisi Owner">
 '''
 
 
@@ -1551,7 +1551,7 @@ def admin_revision_download(rev_id):
 @app.cli.command('seed-demo')
 def seed_demo():
     """Создать демо-организацию."""
-    email = 'demo@spurt.dev'
+    email = 'demo@revisi.ru'
     if Organization.query.filter_by(owner_email=email).first():
         click.echo('Демо-организация уже существует.')
         return
@@ -2266,7 +2266,7 @@ def owner_backup_download():
                 rows.append(d)
             zf.writestr(fname, json.dumps(rows, ensure_ascii=False, indent=2, default=str))
     buf.seek(0)
-    fname = f'calcio_backup_{datetime.utcnow().strftime("%Y%m%d_%H%M%S")}.zip'
+    fname = f'revisi_backup_{datetime.utcnow().strftime("%Y%m%d_%H%M%S")}.zip'
     return send_file(buf, as_attachment=True, download_name=fname, mimetype='application/zip')
 
 
@@ -2540,7 +2540,7 @@ register_html = '''<!DOCTYPE html>
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Регистрация компании — Calcio</title>
+<title>Регистрация компании — Revisi</title>
 {{ pwa_head|safe }}
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
 <style>''' + _BASE_CSS + '''</style>
@@ -2595,7 +2595,7 @@ register_success_html = '''<!DOCTYPE html>
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Проверьте email — Calcio</title>
+<title>Проверьте email — Revisi</title>
 {{ pwa_head|safe }}
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
 <style>''' + _BASE_CSS + '''</style>
@@ -2629,7 +2629,7 @@ message_html = '''<!DOCTYPE html>
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>{{ title }} — Calcio</title>
+<title>{{ title }} — Revisi</title>
 {{ pwa_head|safe }}
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
 <style>''' + _BASE_CSS + '''</style>
@@ -2653,7 +2653,7 @@ placeholder_html = '''<!DOCTYPE html>
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>{{ title }} — Calcio</title>
+<title>{{ title }} — Revisi</title>
 {{ pwa_head|safe }}
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
 <style>''' + _BASE_CSS + '''
@@ -2703,7 +2703,7 @@ login_html = '''<!DOCTYPE html>
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Вход — Calcio</title>
+<title>Вход — Revisi</title>
 {{ pwa_head|safe }}
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
 <style>''' + _BASE_CSS + '''
@@ -4152,7 +4152,7 @@ support_list_html = '''<!DOCTYPE html>
 
   <div class="card">
     <h1>Создать обращение</h1>
-    <p class="muted" style="margin-bottom:14px;">Опишите проблему или вопрос — владелец Calcio ответит лично.</p>
+    <p class="muted" style="margin-bottom:14px;">Опишите проблему или вопрос — владелец Revisi ответит лично.</p>
     <form method="post">
       <input class="input" type="text" name="subject" placeholder="Тема обращения" required maxlength="300">
       <textarea class="area" name="body" placeholder="Подробное описание..." required></textarea>
@@ -4719,7 +4719,7 @@ owner_login_html = '''<!DOCTYPE html>
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Панель владельца — Calcio</title>
+<title>Панель владельца — Revisi</title>
 {{ owner_pwa_head|safe }}
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
 <style>''' + _BASE_CSS + '''
@@ -4755,7 +4755,7 @@ owner_dashboard_html = '''<!DOCTYPE html>
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Owner Dashboard — Calcio</title>
+<title>Owner Dashboard — Revisi</title>
 {{ owner_pwa_head|safe }}
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
 <style>''' + _OWNER_BASE_CSS + '''</style>
@@ -4909,7 +4909,7 @@ owner_orgs_html = '''<!DOCTYPE html>
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Компании — Owner — Calcio</title>
+<title>Компании — Owner — Revisi</title>
 {{ owner_pwa_head|safe }}
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
 <style>''' + _OWNER_BASE_CSS + '''</style>
@@ -5061,7 +5061,7 @@ _OWNER_PAGE_HEAD = '''<!DOCTYPE html>
 <html lang="ru"><head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>__TITLE__ — Calcio Owner</title>
+<title>__TITLE__ — Revisi Owner</title>
 {{ owner_pwa_head|safe }}
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
 <style>''' + _OWNER_BASE_CSS + '''</style>
@@ -5394,7 +5394,7 @@ owner_broadcast_html = (
       </div>
       <div style="margin-bottom:14px;">
         <label style="display:block;font-size:12px;color:rgba(255,255,255,0.6);margin-bottom:6px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">Тема письма</label>
-        <input name="subject" required class="grow" style="background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.12);border-radius:10px;color:white;padding:10px 12px;font-family:'Outfit',sans-serif;font-size:14px;width:100%;" placeholder="Например: Новые функции в Calcio">
+        <input name="subject" required class="grow" style="background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.12);border-radius:10px;color:white;padding:10px 12px;font-family:'Outfit',sans-serif;font-size:14px;width:100%;" placeholder="Например: Новые функции в Revisi">
       </div>
       <div style="margin-bottom:14px;">
         <label style="display:block;font-size:12px;color:rgba(255,255,255,0.6);margin-bottom:6px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">Текст</label>

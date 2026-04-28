@@ -1,7 +1,7 @@
 {
-  "name": "Calcio Owner — Управление",
-  "short_name": "Calcio Owner",
-  "description": "Панель владельца Calcio: управление компаниями и метрики",
+  "name": "Revisi Owner — Управление",
+  "short_name": "Revisi Owner",
+  "description": "Панель владельца Revisi: управление компаниями и метрики",
   "start_url": "/owner",
   "scope": "/owner",
   "display": "standalone",

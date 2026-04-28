@@ -1,5 +1,5 @@
 """
-Модели базы данных для Spurt.
+Модели базы данных для Revisi.
 Каждый класс = одна таблица в PostgreSQL.
 """
 from datetime import datetime, timedelta
