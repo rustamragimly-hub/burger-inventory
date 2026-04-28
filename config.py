@@ -20,6 +20,21 @@ class Config:
     )
     SQLALCHEMY_TRACK_MODIFICATIONS = False
 
+    # Пул соединений: Render Postgres рвёт idle-соединения через ~5 минут,
+    # pool_pre_ping проверяет жизнь соединения перед каждым запросом,
+    # pool_recycle принудительно пересоздаёт раз в 280 сек.
+    # pool_size/max_overflow только для Postgres (SQLite их не принимает).
+    SQLALCHEMY_ENGINE_OPTIONS = {
+        'pool_pre_ping': True,
+        'pool_recycle': 280,
+    }
+    if SQLALCHEMY_DATABASE_URI.startswith(('postgresql', 'postgres')):
+        SQLALCHEMY_ENGINE_OPTIONS['pool_size'] = 5
+        SQLALCHEMY_ENGINE_OPTIONS['max_overflow'] = 10
+
+    # Статика кэшируется в браузере на 7 дней (иконки, manifest, sw.js)
+    SEND_FILE_MAX_AGE_DEFAULT = 60 * 60 * 24 * 7
+
     # Сессии — постоянные, 30 дней
     SESSION_COOKIE_HTTPONLY = True
     SESSION_COOKIE_SAMESITE = 'Lax'

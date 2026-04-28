@@ -4,7 +4,10 @@ services:
     env: python
     plan: free
     buildCommand: "pip install --no-cache-dir -r requirements.txt"
-    startCommand: "gunicorn app:app"
+    # 2 воркера × 4 потока = 8 одновременных запросов; --preload экономит RAM
+    # на Free 512MB; --timeout 30 убивает зависшие запросы.
+    startCommand: "gunicorn app:app --workers 2 --threads 4 --timeout 30 --preload --access-logfile - --error-logfile -"
+    healthCheckPath: /healthz
     envVars:
       - key: PYTHON_VERSION
         value: "3.11.0"

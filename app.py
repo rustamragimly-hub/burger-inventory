@@ -33,6 +33,13 @@ from models import (
 app = Flask(__name__)
 app.config.from_object(Config)
 
+# gzip-сжатие HTML/JSON ответов — ~70% экономии трафика на наших страницах
+try:
+    from flask_compress import Compress
+    Compress(app)
+except ImportError:
+    pass  # Flask-Compress опционален
+
 db.init_app(app)
 migrate = Migrate(app, db)
 
@@ -49,6 +56,18 @@ app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 
 # Время запуска приложения (для health-check uptime)
 _APP_STARTED_AT = datetime.utcnow()
+
+
+# Health-check endpoint для Render — проверяет что приложение живо И БД отвечает.
+# Render автоматически рестартит сервис, если /healthz возвращает 5xx.
+@app.route('/healthz')
+def healthz():
+    from sqlalchemy import text as _sql_text
+    try:
+        db.session.execute(_sql_text('SELECT 1'))
+        return jsonify(status='ok'), 200
+    except Exception as e:
+        return jsonify(status='error', detail=str(e)[:120]), 503
 
 
 _PWA_HEAD = '''
@@ -485,17 +504,29 @@ def admin_panel():
     loc_map = {l.id: l for l in locations}
     user_map = {u.id: u for u in users}
 
+    # N+1 fix: одним запросом считаем количество позиций для всех ревизий
+    from sqlalchemy import func as _sa_func
+    _rev_ids = [r.id for r in pending_revs] + [r.id for r in completed_revs]
+    if _rev_ids:
+        _items_counts = dict(
+            db.session.query(RevisionItem.revision_id, _sa_func.count(RevisionItem.id))
+            .filter(RevisionItem.revision_id.in_(_rev_ids))
+            .group_by(RevisionItem.revision_id)
+            .all()
+        )
+    else:
+        _items_counts = {}
+
     def _rev_info(r):
         loc = loc_map.get(r.location_id)
         u = user_map.get(r.user_id)
-        cnt = RevisionItem.query.filter_by(revision_id=r.id).count()
         return {
             'id': r.id,
             'location': loc.name if loc else '—',
             'user': u.username if u else '—',
             'created_at': r.created_at.strftime('%d.%m.%Y %H:%M') if r.created_at else '',
             'finished_at': r.finished_at.strftime('%d.%m.%Y %H:%M') if r.finished_at else '',
-            'items_count': cnt,
+            'items_count': _items_counts.get(r.id, 0),
         }
 
     pending_list = [_rev_info(r) for r in pending_revs]
