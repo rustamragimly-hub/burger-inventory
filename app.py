@@ -71,9 +71,9 @@ def healthz():
 
 
 _PWA_HEAD = '''
-<link rel="icon" type="image/svg+xml" href="/static/icon.svg?v=2">
-<link rel="apple-touch-icon" href="/static/icon-180.png?v=2">
-<link rel="manifest" href="/static/manifest.json?v=2">
+<link rel="icon" type="image/svg+xml" href="/static/icon.svg?v=3">
+<link rel="apple-touch-icon" href="/static/icon-180.png?v=3">
+<link rel="manifest" href="/static/manifest.json?v=3">
 <meta name="theme-color" content="#0f1725">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
@@ -82,9 +82,9 @@ _PWA_HEAD = '''
 '''
 
 _OWNER_PWA_HEAD = '''
-<link rel="icon" type="image/svg+xml" href="/static/icon-owner.svg?v=2">
-<link rel="apple-touch-icon" href="/static/icon-owner-180.png?v=2">
-<link rel="manifest" href="/static/manifest-owner.json?v=2">
+<link rel="icon" type="image/svg+xml" href="/static/icon-owner.svg?v=3">
+<link rel="apple-touch-icon" href="/static/icon-owner-180.png?v=3">
+<link rel="manifest" href="/static/manifest-owner.json?v=3">
 <meta name="theme-color" content="#0f1725">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
