@@ -58,6 +58,31 @@ app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 _APP_STARTED_AT = datetime.utcnow()
 
 
+# ============== HOSTNAME-РОУТИНГ ==============
+# Лендинг живёт на корневом домене, само приложение — на поддомене app.
+LANDING_HOSTS = {'revisi.ru', 'www.revisi.ru'}
+APP_HOST = 'app.revisi.ru'
+
+
+@app.before_request
+def route_by_host():
+    """revisi.ru/ → лендинг. revisi.ru/<path> → 301 на app.revisi.ru/<path>. app.revisi.ru/* → приложение."""
+    # /static/* и /healthz работают одинаково на обоих хостах без редиректов
+    if request.path.startswith('/static/') or request.path == '/healthz':
+        return None
+
+    host = (request.host or '').split(':')[0].lower()
+
+    if host in LANDING_HOSTS:
+        if request.path == '/':
+            from flask import send_from_directory
+            return send_from_directory('static/landing', 'index.html')
+        new_url = f'https://{APP_HOST}{request.full_path.rstrip("?")}'
+        return redirect(new_url, code=301)
+
+    return None
+
+
 # Health-check endpoint для Render — проверяет что приложение живо И БД отвечает.
 # Render автоматически рестартит сервис, если /healthz возвращает 5xx.
 @app.route('/healthz')
@@ -71,9 +96,9 @@ def healthz():
 
 
 _PWA_HEAD = '''
-<link rel="icon" type="image/svg+xml" href="/static/icon.svg?v=3">
-<link rel="apple-touch-icon" href="/static/icon-180.png?v=3">
-<link rel="manifest" href="/static/manifest.json?v=3">
+<link rel="icon" type="image/svg+xml" href="/static/icon.svg?v=4">
+<link rel="apple-touch-icon" href="/static/icon-180.png?v=4">
+<link rel="manifest" href="/static/manifest.json?v=4">
 <meta name="theme-color" content="#0f1725">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
@@ -82,9 +107,9 @@ _PWA_HEAD = '''
 '''
 
 _OWNER_PWA_HEAD = '''
-<link rel="icon" type="image/svg+xml" href="/static/icon-owner.svg?v=3">
-<link rel="apple-touch-icon" href="/static/icon-owner-180.png?v=3">
-<link rel="manifest" href="/static/manifest-owner.json?v=3">
+<link rel="icon" type="image/svg+xml" href="/static/icon-owner.svg?v=4">
+<link rel="apple-touch-icon" href="/static/icon-owner-180.png?v=4">
+<link rel="manifest" href="/static/manifest-owner.json?v=4">
 <meta name="theme-color" content="#0f1725">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">

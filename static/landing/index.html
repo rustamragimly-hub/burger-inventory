@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Revisi — Ревизии в кафе за 15 минут с телефона</title>
+<meta name="description" content="Простое мобильное приложение для инвентаризации в кафе и сетях общепита. Замените тетрадку и Excel. Синхронизация между точками. От 990₽/мес.">
+<link rel="icon" type="image/png" href="/static/icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/landing/styles.css?v=1">
+</head>
+<body>
+
+<!-- ───── NAV ───── -->
+<nav class="nav">
+  <div class="container nav-inner">
+    <a href="/" class="logo">
+      <img src="/static/icon.png" alt="Revisi" class="logo-img">
+      <span class="logo-text">Revisi</span>
+    </a>
+    <div class="nav-links">
+      <a href="#features">Возможности</a>
+      <a href="#how">Как это работает</a>
+      <a href="#compare">Сравнение</a>
+      <a href="#pricing">Тарифы</a>
+    </div>
+    <div class="nav-actions">
+      <a href="https://app.revisi.ru/login" class="btn btn-ghost">Войти</a>
+      <a href="https://app.revisi.ru/register" class="btn btn-primary">Начать бесплатно</a>
+    </div>
+  </div>
+</nav>
+
+<!-- ───── HERO ───── -->
+<header class="hero">
+  <div class="container hero-inner">
+    <div class="hero-text">
+      <div class="hero-badge">
+        <span class="dot"></span> Бета — 14 дней Pro бесплатно
+      </div>
+      <h1>Ревизии в кафе<br><span class="accent">за 15 минут</span><br>с телефона</h1>
+      <p class="hero-sub">
+        Простое мобильное приложение для инвентаризации в общепите. Заменяет тетрадку и Excel. Синхронизирует все ваши точки в одном экране. Показывает расхождения мгновенно.
+      </p>
+      <div class="hero-cta">
+        <a href="#pricing" class="btn btn-primary btn-lg">Попробовать бесплатно →</a>
+        <a href="#how" class="btn btn-ghost btn-lg">Как это работает</a>
+      </div>
+      <div class="hero-meta">
+        <span>✓ Без карты при регистрации</span>
+        <span>✓ Настройка за 10 минут</span>
+        <span>✓ Поддержка в Telegram</span>
+      </div>
+    </div>
+
+    <div class="hero-visual">
+      <div class="phone">
+        <div class="phone-notch"></div>
+        <div class="phone-screen">
+          <div class="app-bar">
+            <div class="app-time">9:41</div>
+            <div class="app-icons">●●●</div>
+          </div>
+          <div class="app-header">
+            <div class="app-title">Ревизия — Главный склад</div>
+            <div class="app-meta">12 марта · в процессе</div>
+          </div>
+          <div class="app-list">
+            <div class="app-item">
+              <div class="app-item-name">Котлета бургер</div>
+              <div class="app-item-qty">42 шт</div>
+              <div class="app-tag tag-ok">OK</div>
+            </div>
+            <div class="app-item">
+              <div class="app-item-name">Булка бриошь</div>
+              <div class="app-item-qty">28 шт</div>
+              <div class="app-tag tag-warn">−6 шт</div>
+            </div>
+            <div class="app-item">
+              <div class="app-item-name">Сыр чеддер 1кг</div>
+              <div class="app-item-qty">3,4 кг</div>
+              <div class="app-tag tag-ok">OK</div>
+            </div>
+            <div class="app-item">
+              <div class="app-item-name">Соус терияки</div>
+              <div class="app-item-qty">1,2 л</div>
+              <div class="app-tag tag-warn">−0,3 л</div>
+            </div>
+            <div class="app-item">
+              <div class="app-item-name">Картофель фри</div>
+              <div class="app-item-qty">14 кг</div>
+              <div class="app-tag tag-ok">OK</div>
+            </div>
+            <div class="app-item">
+              <div class="app-item-name">Кола 0,5</div>
+              <div class="app-item-qty">62 шт</div>
+              <div class="app-tag tag-ok">OK</div>
+            </div>
+          </div>
+          <div class="app-footer">
+            <div class="app-footer-stat">
+              <div class="stat-value">87</div><div class="stat-label">позиций</div>
+            </div>
+            <div class="app-footer-stat warn">
+              <div class="stat-value">−4 280 ₽</div><div class="stat-label">расхождение</div>
+            </div>
+            <button class="app-footer-btn">Завершить</button>
+          </div>
+        </div>
+      </div>
+      <div class="phone-glow"></div>
+    </div>
+  </div>
+</header>
+
+<!-- ───── STATS ───── -->
+<section class="stats-section">
+  <div class="container stats">
+    <div class="stat">
+      <div class="stat-num">15 мин</div>
+      <div class="stat-cap">средняя ревизия<br>вместо 2-3 часов</div>
+    </div>
+    <div class="stat">
+      <div class="stat-num">−98%</div>
+      <div class="stat-cap">меньше арифметических<br>ошибок чем в Excel</div>
+    </div>
+    <div class="stat">
+      <div class="stat-num">10 мин</div>
+      <div class="stat-cap">от регистрации<br>до первой ревизии</div>
+    </div>
+    <div class="stat">
+      <div class="stat-num">990 ₽</div>
+      <div class="stat-cap">в месяц до 5 точек<br>в разы дешевле комплексных систем</div>
+    </div>
+  </div>
+</section>
+
+<!-- ───── PROBLEM ───── -->
+<section class="problems">
+  <div class="container">
+    <div class="section-head">
+      <div class="section-tag">Проблема</div>
+      <h2>Учёт остатков съедает время и деньги</h2>
+      <p>Большинство кафе и небольших сетей всё ещё считают остатки на бумаге или в общей Excel-таблице. Это дёшево, но обходится дорого.</p>
+    </div>
+
+    <div class="problem-cards">
+      <div class="problem-card">
+        <div class="problem-icon">📓</div>
+        <h3>Тетрадка с ошибками</h3>
+        <p>Линейный персонал считает на коленке, цифры переписывают трижды. К утру владелец не понимает, где недостача — в подсчёте или в реальности.</p>
+      </div>
+      <div class="problem-card">
+        <div class="problem-icon">📊</div>
+        <h3>Excel рассинхронизирован</h3>
+        <p>У каждой точки своя версия таблицы. Кто-то правит на ноуте, кто-то на телефоне, версии расходятся, файл теряется в почте.</p>
+      </div>
+      <div class="problem-card">
+        <div class="problem-icon">🏗️</div>
+        <h3>Комплексные системы — перебор</h3>
+        <p>Полнофункциональные системы для общепита: внедрение пара недель, обучение персонала, цена в разы выше. Для 2-5 точек — это слишком тяжёлый инструмент.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ───── FEATURES ───── -->
+<section class="features" id="features">
+  <div class="container">
+    <div class="section-head">
+      <div class="section-tag">Решение</div>
+      <h2>Только то, что нужно для ревизий — ничего лишнего</h2>
+      <p>Revisi не пытается заменить вашу кассу или 1С. Мы делаем одну вещь, и делаем её лучше всех — мобильную инвентаризацию для общепита.</p>
+    </div>
+
+    <div class="feature-grid">
+      <div class="feature">
+        <div class="feature-icon">📱</div>
+        <h3>Mobile-first</h3>
+        <p>Считаете прямо у стеллажа: открыли приложение, ввели остатки, перешли к следующей позиции. Никакого «сначала на бумагу, потом в компьютер».</p>
+      </div>
+      <div class="feature">
+        <div class="feature-icon">🔄</div>
+        <h3>Все точки в одном экране</h3>
+        <p>2-3 кафе синхронизируются в реальном времени. Видите остатки и недостачи по сети, не звоня каждому управляющему.</p>
+      </div>
+      <div class="feature">
+        <div class="feature-icon">⚡</div>
+        <h3>Расхождения мгновенно</h3>
+        <p>Система сравнивает плановые и фактические остатки автоматически. Сразу видно, где списания подозрительные.</p>
+      </div>
+      <div class="feature">
+        <div class="feature-icon">📤</div>
+        <h3>Экспорт в Excel</h3>
+        <p>Любую ревизию выгружаете в .xlsx или .csv для бухгалтерии и поставщиков. История хранится навсегда.</p>
+      </div>
+      <div class="feature">
+        <div class="feature-icon">👥</div>
+        <h3>Доступы для персонала</h3>
+        <p>Управляющий, повар, бухгалтер — у каждого свой логин и свои права. История действий — кто, когда, что считал.</p>
+      </div>
+      <div class="feature">
+        <div class="feature-icon">🚀</div>
+        <h3>Без обучения</h3>
+        <p>Интерфейс понятен повару, не только бухгалтеру. Линейный персонал начинает считать без инструкций.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ───── HOW ───── -->
+<section class="how" id="how">
+  <div class="container">
+    <div class="section-head">
+      <div class="section-tag">3 шага</div>
+      <h2>Как это работает</h2>
+    </div>
+
+    <div class="how-steps">
+      <div class="how-step">
+        <div class="step-num">1</div>
+        <h3>Регистрация и настройка</h3>
+        <p>Создаёте организацию, добавляете точки и список товаров — вручную или импортом из Excel. Занимает 10 минут.</p>
+        <div class="step-time">10 минут</div>
+      </div>
+      <div class="how-step">
+        <div class="step-num">2</div>
+        <h3>Ревизия с телефона</h3>
+        <p>Управляющий или повар проходит по складу с телефоном, вводит фактические остатки. Все вводы попадают в одну общую базу.</p>
+        <div class="step-time">15 минут</div>
+      </div>
+      <div class="how-step">
+        <div class="step-num">3</div>
+        <h3>Анализ результатов</h3>
+        <p>Владелец видит результат сразу: список расхождений, итоговая сумма недостачи, сравнение с предыдущими ревизиями.</p>
+        <div class="step-time">сразу</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ───── COMPARE ───── -->
+<section class="compare" id="compare">
+  <div class="container">
+    <div class="section-head">
+      <div class="section-tag">Сравнение</div>
+      <h2>Куда мы попадаем на рынке</h2>
+      <p>Мы не пытаемся быть «всем». Если у вас большая сеть и нужна полная экосистема — берите комплексное решение для общепита. Если 1-5 точек и нужны только ревизии — мы лучшее решение.</p>
+    </div>
+
+    <div class="compare-table-wrap">
+      <table class="compare-table">
+        <thead>
+          <tr>
+            <th></th>
+            <th>Excel / тетрадь</th>
+            <th>Универсальные склад-системы<sup>*</sup></th>
+            <th>Комплексные системы общепита<sup>*</sup></th>
+            <th class="us">Revisi</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td>Цена в месяц</td><td>0 ₽</td><td>в разы дешевле<br>(но непрофильно)</td><td>в 5-10× дороже</td><td class="us"><strong>от 0 ₽ (Free)<br>990 ₽ (Pro)</strong></td></tr>
+          <tr><td>Время на настройку</td><td>—</td><td>~1 день</td><td>1-2 недели</td><td class="us"><strong>10 минут</strong></td></tr>
+          <tr><td>Mobile-first</td><td><span class="x">✗</span></td><td><span class="mid">частично</span></td><td><span class="mid">через клиент</span></td><td class="us"><strong><span class="ok">✓</span></strong></td></tr>
+          <tr><td>Заточено под общепит</td><td><span class="x">✗</span></td><td><span class="x">✗ универсал</span></td><td><span class="ok">✓</span></td><td class="us"><strong><span class="ok">✓</span></strong></td></tr>
+          <tr><td>Синхр. между точками</td><td><span class="x">✗</span></td><td><span class="ok">✓</span></td><td><span class="ok">✓</span></td><td class="us"><strong><span class="ok">✓</span></strong></td></tr>
+          <tr><td>POS / чеки</td><td><span class="x">✗</span></td><td><span class="x">✗</span></td><td><span class="ok">✓</span></td><td class="us"><span class="x">✗ (по плану нет)</span></td></tr>
+          <tr><td>Сложность для линейного персонала</td><td><span class="ok">просто</span></td><td><span class="mid">средне</span></td><td><span class="x">сложно</span></td><td class="us"><strong><span class="ok">очень просто</span></strong></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="honesty">
+      <strong>Будем честны:</strong> если вам нужна полная система с POS, складом, персоналом, доставкой и всем сразу — берите комплексное решение для общепита. Если у вас 1-5 точек и проблема именно в ревизиях — Revisi окупится в первый же месяц.
+    </div>
+
+    <p class="disclaimer">
+      <sup>*</sup> Под «универсальными склад-системами» подразумеваются продукты вроде МойСклад, КонтурМаркет, 1С: Управление торговлей. Под «комплексными системами общепита» — iiko, R-Keeper, Quick Resto, Poster и аналогичные. Все указанные товарные знаки принадлежат их правообладателям. Сравнение основано на публично доступной информации; характеристики и цены могут меняться — актуальные данные смотрите на сайтах поставщиков.
+    </p>
+  </div>
+</section>
+
+<!-- ───── PRICING ───── -->
+<section class="pricing" id="pricing">
+  <div class="container">
+    <div class="section-head">
+      <div class="section-tag">Тарифы</div>
+      <h2>Простые тарифы. Без скрытых платежей.</h2>
+      <p>14 дней Pro бесплатно для всех новых пользователей. Без карты при регистрации. Можно отказаться в любой момент.</p>
+    </div>
+
+    <div class="pricing-grid">
+      <div class="plan">
+        <div class="plan-name">Free</div>
+        <div class="plan-price"><span class="price">0 ₽</span> навсегда</div>
+        <ul class="plan-features">
+          <li>1 организация</li>
+          <li>1 точка</li>
+          <li>До 100 товаров</li>
+          <li>Базовые ревизии</li>
+          <li>Поддержка email</li>
+        </ul>
+        <a href="https://app.revisi.ru/register" class="btn btn-ghost btn-block">Начать</a>
+        <div class="plan-meta">Без оплаты, без карты</div>
+      </div>
+
+      <div class="plan plan-featured">
+        <div class="plan-badge">Популярный</div>
+        <div class="plan-name">Pro</div>
+        <div class="plan-price"><span class="price">990 ₽</span> / мес</div>
+        <div class="plan-yearly">или 9 900 ₽/год — экономия 17%</div>
+        <ul class="plan-features">
+          <li>До <strong>5 точек</strong></li>
+          <li>До 5 пользователей</li>
+          <li><strong>Без лимита товаров</strong></li>
+          <li>Экспорт в Excel и CSV</li>
+          <li>Email-уведомления</li>
+          <li>Owner-панель и аналитика</li>
+          <li>Поддержка в Telegram</li>
+        </ul>
+        <a href="https://app.revisi.ru/register" class="btn btn-primary btn-block">Попробовать 14 дней</a>
+        <div class="plan-meta">Кредитка не требуется</div>
+      </div>
+
+      <div class="plan">
+        <div class="plan-name">Business</div>
+        <div class="plan-price"><span class="price">2 990 ₽</span> / мес</div>
+        <div class="plan-yearly">или 29 900 ₽/год</div>
+        <ul class="plan-features">
+          <li>До <strong>20 точек</strong></li>
+          <li>До 20 пользователей</li>
+          <li><strong>Несколько организаций</strong> (для франшиз)</li>
+          <li>API-доступ</li>
+          <li>Custom-брендинг</li>
+          <li>Onboarding-созвон</li>
+          <li>Приоритетная поддержка</li>
+        </ul>
+        <a href="https://app.revisi.ru/register" class="btn btn-ghost btn-block">Попробовать 14 дней</a>
+        <div class="plan-meta">Идеально для растущих сетей</div>
+      </div>
+    </div>
+
+    <div class="pricing-extra">
+      Сеть от 50+ точек? <a href="#">Свяжитесь с нами</a> — обсудим Enterprise-тариф.
+    </div>
+  </div>
+</section>
+
+<!-- ───── FAQ ───── -->
+<section class="faq">
+  <div class="container">
+    <div class="section-head">
+      <div class="section-tag">FAQ</div>
+      <h2>Частые вопросы</h2>
+    </div>
+
+    <div class="faq-list">
+      <details class="faq-item">
+        <summary>Чем вы отличаетесь от комплексных систем общепита?</summary>
+        <div class="faq-body">Системы вроде iiko или R-Keeper — это POS + склад + аналитика + персонал в одном продукте. Мы делаем только инвентаризацию, но мобильнее и в разы дешевле. Если вам нужна полная экосистема — берите комплексное решение, если нужна именно мобильная ревизия — Revisi.</div>
+      </details>
+      <details class="faq-item">
+        <summary>Можно импортировать список товаров из Excel?</summary>
+        <div class="faq-body">Да. На этапе настройки вы загружаете .xlsx-файл со списком позиций — система сама распознает названия и единицы измерения.</div>
+      </details>
+      <details class="faq-item">
+        <summary>Что с моими данными, если я перестану платить?</summary>
+        <div class="faq-body">Аккаунт не удаляется — он просто переходит на тариф Free. Вы продолжаете видеть всю историю ревизий. Если вернётесь на Pro — все данные на месте.</div>
+      </details>
+      <details class="faq-item">
+        <summary>Есть ли API для интеграций с 1С или iiko?</summary>
+        <div class="faq-body">API доступно на тарифе Business. На Pro идёт экспорт в Excel/CSV — этого достаточно для большинства интеграций с бухгалтерией.</div>
+      </details>
+      <details class="faq-item">
+        <summary>Где хранятся данные? 152-ФЗ?</summary>
+        <div class="faq-body">Данные хранятся на серверах в РФ (Timeweb Cloud). Соответствие 152-ФЗ обеспечивается за счёт локализации. Договор-оферта прописывает обработку данных.</div>
+      </details>
+      <details class="faq-item">
+        <summary>Какие способы оплаты вы принимаете?</summary>
+        <div class="faq-body">Оплата картой через ЮKassa (Visa, MasterCard, МИР) или на расчётный счёт ИП по выставленному счёту. Чеки формируются автоматически по 54-ФЗ.</div>
+      </details>
+      <details class="faq-item">
+        <summary>Можно ли работать без интернета?</summary>
+        <div class="faq-body">Приложение — это PWA, кэширует интерфейс. Считать остатки можно офлайн, но синхронизация с другими точками произойдёт только когда появится сеть.</div>
+      </details>
+    </div>
+  </div>
+</section>
+
+<!-- ───── CTA ───── -->
+<section class="final-cta">
+  <div class="container">
+    <h2>Перестаньте терять часы на ревизии</h2>
+    <p>14 дней Pro бесплатно. Без карты. Настройка за 10 минут.</p>
+    <a href="https://app.revisi.ru/register" class="btn btn-primary btn-lg">Начать бесплатно →</a>
+  </div>
+</section>
+
+<!-- ───── FOOTER ───── -->
+<footer class="footer">
+  <div class="container footer-inner">
+    <div class="footer-brand">
+      <img src="/static/icon.png" alt="Revisi" class="footer-icon">
+      <div>
+        <div class="footer-name">Revisi</div>
+        <div class="footer-tag">Учёт остатков для общепита</div>
+      </div>
+    </div>
+    <div class="footer-links">
+      <a href="#">Документация</a>
+      <a href="#">Контакты</a>
+      <a href="#">Telegram</a>
+      <a href="#">Договор-оферта</a>
+      <a href="#">Политика конфиденциальности</a>
+    </div>
+    <div class="footer-meta">
+      © 2026 ИП. Все права защищены. Сделано в России.
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>
