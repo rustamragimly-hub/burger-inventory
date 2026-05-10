@@ -20,6 +20,7 @@ import os
 import re
 import csv
 import io
+import json
 import click
 
 from config import Config
@@ -1781,6 +1782,19 @@ def owner_login():
             error = 'Неверный email или пароль.'
         else:
             log_attempt(ip, email, True)
+            # Если у owner включена 2FA — не логиним сразу, отправляем на /owner/2fa/verify
+            emergency_bypass = (
+                os.environ.get('OWNER_2FA_EMERGENCY_DISABLE', '').lower() == 'true'
+            )
+            if owner.totp_enabled and not emergency_bypass:
+                session['_pending_2fa_owner_id'] = owner.id
+                session['_pending_2fa_at'] = datetime.utcnow().timestamp()
+                return redirect('/owner/2fa/verify')
+            if owner.totp_enabled and emergency_bypass:
+                log_owner_action(
+                    '2fa_emergency_bypass',
+                    details=f'ip={ip} email={owner.email}',
+                )
             login_user(AuthUser(owner, 'owner'), remember=False)  # без remember — короткая сессия
             session['owner_login_at'] = datetime.utcnow().timestamp()
             return redirect('/owner')
@@ -1792,6 +1806,198 @@ def owner_login():
 def owner_logout():
     logout_user()
     return redirect('/owner/login')
+
+
+# ============== 2FA (TOTP) для OWNER ==============
+
+def _generate_recovery_codes(count=10):
+    """Генерируем человекочитаемые recovery-коды формата XXXX-XXXX."""
+    codes = []
+    for _ in range(count):
+        raw = secrets.token_hex(4).upper()  # 8 hex
+        codes.append(f'{raw[:4]}-{raw[4:]}')
+    return codes
+
+
+def _hash_recovery_codes(codes):
+    """Сериализуем recovery-коды как JSON-список захешированных значений."""
+    norm = [c.replace('-', '').replace(' ', '').lower() for c in codes]
+    return json.dumps([generate_password_hash(c) for c in norm])
+
+
+def _verify_totp(owner, code):
+    """Проверка TOTP-кода с окном ±1 (30 сек) для clock drift."""
+    if not owner or not owner.totp_secret:
+        return False
+    code = (code or '').strip().replace(' ', '')
+    if not code.isdigit() or len(code) != 6:
+        return False
+    import pyotp
+    return pyotp.TOTP(owner.totp_secret).verify(code, valid_window=1)
+
+
+def _verify_recovery_code(owner, code):
+    """Проверка recovery-кода. Если совпал — удаляем из списка (одноразовый)."""
+    if not owner or not owner.recovery_codes_json:
+        return False
+    code_norm = (code or '').replace('-', '').replace(' ', '').lower()
+    if not code_norm:
+        return False
+    try:
+        hashed_list = json.loads(owner.recovery_codes_json)
+    except Exception:
+        return False
+    for i, h in enumerate(hashed_list):
+        if check_password_hash(h, code_norm):
+            hashed_list.pop(i)
+            owner.recovery_codes_json = json.dumps(hashed_list)
+            db.session.commit()
+            return True
+    return False
+
+
+def _make_qr_svg(uri):
+    """Сгенерировать QR-код как SVG-строку (без зависимости от Pillow)."""
+    import qrcode
+    import qrcode.image.svg
+    factory = qrcode.image.svg.SvgPathImage
+    img = qrcode.make(uri, image_factory=factory, box_size=10, border=2)
+    buf = BytesIO()
+    img.save(buf)
+    return buf.getvalue().decode('utf-8')
+
+
+@app.route('/owner/security')
+@owner_required
+def owner_security():
+    owner = OwnerUser.query.get(current_user.record.id)
+    remaining = 0
+    if owner.recovery_codes_json:
+        try:
+            remaining = len(json.loads(owner.recovery_codes_json))
+        except Exception:
+            remaining = 0
+    return render_template_string(
+        owner_security_html,
+        owner_email=owner.email,
+        totp_enabled=owner.totp_enabled,
+        remaining_codes=remaining,
+        owner_pwa_head=_OWNER_PWA_HEAD,
+    )
+
+
+@app.route('/owner/2fa/setup', methods=['GET', 'POST'])
+@owner_required
+def owner_2fa_setup():
+    owner = OwnerUser.query.get(current_user.record.id)
+    if owner.totp_enabled:
+        flash('2FA уже включена. Сначала отключите её.', 'error')
+        return redirect('/owner/security')
+
+    import pyotp
+    secret = session.get('_2fa_setup_secret')
+    if not secret:
+        secret = pyotp.random_base32()
+        session['_2fa_setup_secret'] = secret
+
+    error = None
+    if request.method == 'POST':
+        code = (request.form.get('code') or '').strip().replace(' ', '')
+        if not code.isdigit() or len(code) != 6:
+            error = 'Введите 6-значный код из приложения.'
+        elif not pyotp.TOTP(secret).verify(code, valid_window=1):
+            error = 'Неверный код. Проверьте, что время на телефоне точное.'
+        else:
+            owner.totp_secret = secret
+            owner.totp_enabled = True
+            recovery = _generate_recovery_codes(10)
+            owner.recovery_codes_json = _hash_recovery_codes(recovery)
+            db.session.commit()
+            session.pop('_2fa_setup_secret', None)
+            log_owner_action('enable_2fa')
+            return render_template_string(
+                owner_2fa_codes_html,
+                codes=recovery,
+                owner_pwa_head=_OWNER_PWA_HEAD,
+            )
+
+    uri = pyotp.TOTP(secret).provisioning_uri(
+        name=owner.email, issuer_name='Revisi Owner'
+    )
+    qr_svg = _make_qr_svg(uri)
+    return render_template_string(
+        owner_2fa_setup_html,
+        qr_svg=qr_svg,
+        secret=secret,
+        error=error,
+        owner_pwa_head=_OWNER_PWA_HEAD,
+    )
+
+
+@app.route('/owner/2fa/verify', methods=['GET', 'POST'])
+def owner_2fa_verify():
+    pending_id = session.get('_pending_2fa_owner_id')
+    pending_at = session.get('_pending_2fa_at', 0)
+    # 5-минутное окно между паролем и 2FA-кодом
+    if not pending_id or datetime.utcnow().timestamp() - pending_at > 300:
+        session.pop('_pending_2fa_owner_id', None)
+        session.pop('_pending_2fa_at', None)
+        return redirect('/owner/login')
+
+    owner = OwnerUser.query.get(pending_id)
+    if not owner or not owner.totp_enabled:
+        session.pop('_pending_2fa_owner_id', None)
+        session.pop('_pending_2fa_at', None)
+        return redirect('/owner/login')
+
+    error = None
+    if request.method == 'POST':
+        ip = request.remote_addr or 'unknown'
+        if count_recent_failed_attempts(ip) >= Config.OWNER_MAX_LOGIN_ATTEMPTS:
+            error = (
+                f'Слишком много неудачных попыток. '
+                f'Через {Config.LOGIN_LOCKOUT_MINUTES} минут.'
+            )
+        else:
+            code = (request.form.get('code') or '').strip()
+            if _verify_totp(owner, code) or _verify_recovery_code(owner, code):
+                session.pop('_pending_2fa_owner_id', None)
+                session.pop('_pending_2fa_at', None)
+                log_attempt(ip, owner.email + ' [2fa]', True)
+                login_user(AuthUser(owner, 'owner'), remember=False)
+                session['owner_login_at'] = datetime.utcnow().timestamp()
+                return redirect('/owner')
+            log_attempt(ip, owner.email + ' [2fa]', False)
+            error = 'Неверный код'
+
+    return render_template_string(
+        owner_2fa_verify_html,
+        error=error,
+        owner_pwa_head=_OWNER_PWA_HEAD,
+    )
+
+
+@app.route('/owner/2fa/disable', methods=['POST'])
+@owner_required
+def owner_2fa_disable():
+    owner = OwnerUser.query.get(current_user.record.id)
+    password = request.form.get('password') or ''
+    code = (request.form.get('code') or '').strip()
+
+    if not owner.check_password(password):
+        flash('Неверный пароль', 'error')
+        return redirect('/owner/security')
+    if not (_verify_totp(owner, code) or _verify_recovery_code(owner, code)):
+        flash('Неверный код', 'error')
+        return redirect('/owner/security')
+
+    owner.totp_secret = None
+    owner.totp_enabled = False
+    owner.recovery_codes_json = None
+    db.session.commit()
+    log_owner_action('disable_2fa')
+    flash('2FA отключена', 'success')
+    return redirect('/owner/security')
 
 
 @app.route('/owner')
@@ -4746,6 +4952,7 @@ _OWNER_TABS = [
     ('catalog', '/owner/catalog', '📦', 'Каталог'),
     ('backup', '/owner/backup', '🗄', 'Бэкап'),
     ('health', '/owner/health', '🏥', 'Health'),
+    ('security', '/owner/security', '🔒', 'Безопасность'),
     ('sql', '/owner/sql', '🔧', 'SQL'),
 ]
 # Какие 4 главные показываются в нижнем баре, остальные — в "Ещё"
@@ -4840,6 +5047,206 @@ owner_login_html = '''<!DOCTYPE html>
 </div>
 </body>
 </html>'''
+
+
+# ============== ШАБЛОНЫ 2FA (login-style — компактная карточка) ==============
+
+owner_2fa_verify_html = '''<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>2FA — Revisi Owner</title>
+{{ owner_pwa_head|safe }}
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
+<style>''' + _BASE_CSS + '''
+.input-code{letter-spacing:8px;font-size:24px;text-align:center;font-family:'SF Mono','Monaco',monospace;}
+.hint{font-size:13px;color:rgba(255,255,255,0.55);margin-top:14px;text-align:center;line-height:1.5;}
+</style>
+</head>
+<body>
+<div class="blob blob-1"></div>
+<div class="blob blob-2"></div>
+<div class="blob blob-3"></div>
+<div class="card">
+  <div class="icon-box">🔐</div>
+  <div class="title">Двухфакторная аутентификация</div>
+  <div class="subtitle">Введите 6-значный код из приложения</div>
+  {% if error %}<div class="error">{{ error }}</div>{% endif %}
+  <form method="post">
+    <div class="form-group">
+      <input class="input input-code" type="text" name="code" required autocomplete="one-time-code"
+             inputmode="numeric" pattern="[0-9 ]*" maxlength="9" placeholder="000000" autofocus>
+    </div>
+    <button class="btn-primary" type="submit">Войти →</button>
+  </form>
+  <div class="hint">Если потеряли телефон — введите один из recovery-кодов<br>(формат XXXX-XXXX).</div>
+</div>
+</body>
+</html>'''
+
+
+owner_2fa_setup_html = '''<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Включение 2FA — Revisi Owner</title>
+{{ owner_pwa_head|safe }}
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
+<style>''' + _BASE_CSS + '''
+.qr-box{background:#fff;border-radius:12px;padding:14px;display:flex;justify-content:center;margin:18px auto;max-width:240px;}
+.qr-box svg{width:100%;height:auto;display:block;}
+.secret-box{background:rgba(0,0,0,0.3);border:1px dashed rgba(255,255,255,0.18);border-radius:8px;padding:10px 14px;font-family:'SF Mono','Monaco',monospace;font-size:13px;color:#fed7aa;text-align:center;letter-spacing:1px;margin-top:10px;word-break:break-all;}
+.steps{font-size:14px;color:rgba(255,255,255,0.75);line-height:1.6;text-align:left;margin:14px 0;}
+.steps ol{padding-left:22px;margin:0;}
+.steps li{margin-bottom:6px;}
+.input-code{letter-spacing:8px;font-size:22px;text-align:center;font-family:'SF Mono','Monaco',monospace;}
+.cancel-link{display:block;margin-top:14px;text-align:center;font-size:13px;color:rgba(255,255,255,0.55);}
+.cancel-link:hover{color:#fb923c;}
+</style>
+</head>
+<body>
+<div class="blob blob-1"></div>
+<div class="blob blob-2"></div>
+<div class="card" style="max-width:480px;">
+  <div class="icon-box">🔐</div>
+  <div class="title">Включить 2FA</div>
+  <div class="subtitle">Защита owner-панели вторым фактором</div>
+
+  <div class="steps">
+    <ol>
+      <li>Откройте Google Authenticator, Authy, 1Password или Yandex Key</li>
+      <li>Отсканируйте QR-код ниже</li>
+      <li>Введите 6-значный код из приложения для подтверждения</li>
+    </ol>
+  </div>
+
+  <div class="qr-box">{{ qr_svg|safe }}</div>
+
+  <div class="hint" style="font-size:12px;color:rgba(255,255,255,0.5);text-align:center;">
+    Не видите QR? Введите ключ вручную:
+  </div>
+  <div class="secret-box">{{ secret }}</div>
+
+  {% if error %}<div class="error" style="margin-top:14px;">{{ error }}</div>{% endif %}
+  <form method="post" style="margin-top:18px;">
+    <div class="form-group">
+      <label>Код из приложения</label>
+      <input class="input input-code" type="text" name="code" required autocomplete="one-time-code"
+             inputmode="numeric" pattern="[0-9 ]*" maxlength="9" placeholder="000000" autofocus>
+    </div>
+    <button class="btn-primary" type="submit">Подтвердить и включить</button>
+  </form>
+  <a class="cancel-link" href="/owner/security">← Отмена</a>
+</div>
+</body>
+</html>'''
+
+
+owner_2fa_codes_html = '''<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Recovery-коды — Revisi Owner</title>
+{{ owner_pwa_head|safe }}
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
+<style>''' + _BASE_CSS + '''
+.codes-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:18px 0;font-family:'SF Mono','Monaco',monospace;font-size:15px;}
+.code-item{background:rgba(0,0,0,0.3);border:1px solid rgba(251,146,60,0.2);border-radius:8px;padding:10px 12px;text-align:center;color:#fed7aa;letter-spacing:1px;}
+.warn-box{background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.3);border-radius:10px;padding:14px;font-size:13px;line-height:1.5;color:#fca5a5;text-align:left;margin:14px 0;}
+.warn-box strong{color:#ef4444;display:block;margin-bottom:6px;}
+.btn-copy{display:inline-block;margin-top:10px;padding:8px 14px;background:rgba(255,255,255,0.08);color:#fff;border:1px solid rgba(255,255,255,0.15);border-radius:8px;font-size:13px;cursor:pointer;font-family:inherit;}
+.btn-copy:hover{background:rgba(255,255,255,0.14);}
+</style>
+</head>
+<body>
+<div class="blob blob-1"></div>
+<div class="blob blob-2"></div>
+<div class="card" style="max-width:520px;">
+  <div class="icon-box">📋</div>
+  <div class="title">2FA включена ✓</div>
+  <div class="subtitle">Сохраните recovery-коды</div>
+
+  <div class="warn-box">
+    <strong>⚠️ Внимание — это единственный раз когда вы видите эти коды</strong>
+    Каждый код можно использовать <b>один раз</b> вместо TOTP, если потеряете телефон.
+    Запишите их в безопасное место (1Password, заметка с шифрованием, бумажка в сейфе).
+  </div>
+
+  <div class="codes-grid">
+    {% for code in codes %}<div class="code-item">{{ code }}</div>{% endfor %}
+  </div>
+
+  <button type="button" class="btn-copy" onclick="navigator.clipboard.writeText(this.dataset.codes);this.textContent='Скопировано ✓';"
+          data-codes="{% for code in codes %}{{ code }}{% if not loop.last %}\\n{% endif %}{% endfor %}">
+    📋 Скопировать в буфер
+  </button>
+
+  <a class="btn-primary" href="/owner/security" style="display:block;margin-top:18px;text-decoration:none;">
+    Я сохранил коды → Перейти к панели
+  </a>
+</div>
+</body>
+</html>'''
+
+
+owner_security_html = (
+    _OWNER_PAGE_HEAD.replace('__TITLE__', 'Безопасность')
+    + '''
+<div class="page-content" style="max-width:700px;margin:0 auto;">
+  <h1 style="font-size:24px;font-weight:700;margin-bottom:18px;">🔐 Безопасность</h1>
+
+  <div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:14px;padding:24px;margin-bottom:18px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:12px;">
+      <div>
+        <div style="font-size:18px;font-weight:600;margin-bottom:4px;">Двухфакторная аутентификация</div>
+        <div style="font-size:13px;color:rgba(255,255,255,0.6);">
+          {% if totp_enabled %}
+          <span style="color:#10b981;">●</span> Включена · {{ remaining_codes }} recovery-кодов осталось
+          {% else %}
+          <span style="color:#ef4444;">●</span> Отключена
+          {% endif %}
+        </div>
+      </div>
+      {% if not totp_enabled %}
+      <a href="/owner/2fa/setup" style="background:#fb923c;color:#1a0c00;font-weight:600;padding:10px 18px;border-radius:8px;text-decoration:none;font-size:14px;">Включить 2FA</a>
+      {% endif %}
+    </div>
+
+    {% if totp_enabled %}
+    <div style="font-size:13px;color:rgba(255,255,255,0.6);line-height:1.6;margin-top:14px;">
+      При входе после email+пароля будет запрашиваться 6-значный код из приложения-аутентификатора.
+      Если потеряли доступ к приложению — используйте один из recovery-кодов.
+    </div>
+
+    <details style="margin-top:18px;border-top:1px solid rgba(255,255,255,0.08);padding-top:14px;">
+      <summary style="cursor:pointer;color:#ef4444;font-size:14px;font-weight:600;">Отключить 2FA</summary>
+      <form method="post" action="/owner/2fa/disable" style="margin-top:14px;display:flex;flex-direction:column;gap:10px;">
+        <input type="password" name="password" required placeholder="Текущий пароль"
+               style="background:rgba(0,0,0,0.3);border:1px solid rgba(255,255,255,0.15);border-radius:8px;padding:10px 14px;color:#fff;font-family:inherit;font-size:14px;">
+        <input type="text" name="code" required placeholder="6-значный код или recovery-код"
+               autocomplete="one-time-code" inputmode="numeric"
+               style="background:rgba(0,0,0,0.3);border:1px solid rgba(255,255,255,0.15);border-radius:8px;padding:10px 14px;color:#fff;font-family:inherit;font-size:14px;letter-spacing:2px;">
+        <button type="submit" style="background:#ef4444;color:#fff;font-weight:600;padding:10px;border-radius:8px;border:none;cursor:pointer;font-size:14px;">
+          Отключить 2FA
+        </button>
+      </form>
+    </details>
+    {% endif %}
+  </div>
+
+  <div style="font-size:12px;color:rgba(255,255,255,0.45);line-height:1.6;">
+    <strong style="color:rgba(255,255,255,0.7);">Что ещё защищает owner-панель:</strong><br>
+    • Rate-limit: 3 неудачные попытки → блокировка на 15 мин<br>
+    • Idle-timeout: 2 часа без активности → автологаут<br>
+    • Поисковики не индексируют, браузеры не кешируют, нет referrer-leak
+  </div>
+</div>
+'''
+    + _OWNER_PAGE_FOOT
+)
 
 
 owner_dashboard_html = '''<!DOCTYPE html>
@@ -5782,6 +6189,16 @@ with app.app_context():
             ))
             conn.execute(db.text(
                 'ALTER TABLE organizations ADD COLUMN IF NOT EXISTS monthly_price INTEGER DEFAULT 0'
+            ))
+            # 2FA для owner_users
+            conn.execute(db.text(
+                'ALTER TABLE owner_users ADD COLUMN IF NOT EXISTS totp_secret VARCHAR(64)'
+            ))
+            conn.execute(db.text(
+                'ALTER TABLE owner_users ADD COLUMN IF NOT EXISTS totp_enabled BOOLEAN DEFAULT FALSE NOT NULL'
+            ))
+            conn.execute(db.text(
+                'ALTER TABLE owner_users ADD COLUMN IF NOT EXISTS recovery_codes_json TEXT'
             ))
             conn.commit()
     except Exception as _e:

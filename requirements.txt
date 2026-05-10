@@ -11,3 +11,5 @@ Flask-Mail==0.10.0
 Flask-Compress==1.14
 psycopg2-binary==2.9.12
 python-dotenv==1.0.0
+pyotp==2.9.0
+qrcode==7.4.2

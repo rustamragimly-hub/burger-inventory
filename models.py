@@ -192,6 +192,12 @@ class OwnerUser(db.Model):
     password_hash = db.Column(db.String(255), nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
+    # 2FA (TOTP по RFC 6238)
+    totp_secret = db.Column(db.String(64), nullable=True)
+    totp_enabled = db.Column(db.Boolean, default=False, nullable=False)
+    # JSON-список захешированных одноразовых recovery-кодов (на случай потери телефона)
+    recovery_codes_json = db.Column(db.Text, nullable=True)
+
     def set_password(self, raw):
         self.password_hash = generate_password_hash(raw)
 
