@@ -64,6 +64,18 @@ LANDING_HOSTS = {'revisi.ru', 'www.revisi.ru'}
 APP_HOST = 'app.revisi.ru'
 
 
+@app.after_request
+def add_owner_security_headers(response):
+    """Owner-панель не должна попадать в поиск, кеши и архивы."""
+    if request.path.startswith('/owner'):
+        response.headers['X-Robots-Tag'] = 'noindex, nofollow, nosnippet, noarchive'
+        response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, private'
+        response.headers['Pragma'] = 'no-cache'
+        response.headers['Expires'] = '0'
+        response.headers['Referrer-Policy'] = 'no-referrer'
+    return response
+
+
 @app.before_request
 def route_by_host():
     """revisi.ru/ → лендинг. revisi.ru/<path> → 301 на app.revisi.ru/<path>. app.revisi.ru/* → приложение."""
@@ -1722,11 +1734,24 @@ def support_view(ticket_id):
 # ============== OWNER PANEL ==============
 
 def owner_required(fn):
-    """Decorator: only authenticated OwnerUser may access this route."""
+    """Decorator: only authenticated OwnerUser may access this route.
+    Idle-timeout: после Config.OWNER_SESSION_TIMEOUT_MINUTES без активности — logout.
+    """
     @wraps(fn)
     def wrapper(*args, **kwargs):
         if not current_user.is_authenticated or current_user.user_type != 'owner':
             return redirect('/owner/login')
+
+        login_at = session.get('owner_login_at', 0)
+        idle_seconds = datetime.utcnow().timestamp() - login_at
+        if idle_seconds > Config.OWNER_SESSION_TIMEOUT_MINUTES * 60:
+            logout_user()
+            session.pop('owner_login_at', None)
+            flash('Сессия владельца истекла. Войдите заново.', 'error')
+            return redirect('/owner/login')
+
+        # Rolling timeout: каждый запрос продлевает таймер на N минут
+        session['owner_login_at'] = datetime.utcnow().timestamp()
         return fn(*args, **kwargs)
     return wrapper
 
@@ -1742,13 +1767,22 @@ def owner_login():
         password = request.form.get('password') or ''
         ip = request.remote_addr or 'unknown'
 
+        # Защита от брутфорса — для owner порог жёстче, чем для обычных юзеров
+        if count_recent_failed_attempts(ip) >= Config.OWNER_MAX_LOGIN_ATTEMPTS:
+            error = (
+                f'Слишком много неудачных попыток. '
+                f'Попробуйте через {Config.LOGIN_LOCKOUT_MINUTES} минут.'
+            )
+            return render_template_string(owner_login_html, error=error)
+
         owner = OwnerUser.query.filter_by(email=email).first()
         if not owner or not owner.check_password(password):
             log_attempt(ip, email, False)
             error = 'Неверный email или пароль.'
         else:
             log_attempt(ip, email, True)
-            login_user(AuthUser(owner, 'owner'), remember=True)
+            login_user(AuthUser(owner, 'owner'), remember=False)  # без remember — короткая сессия
+            session['owner_login_at'] = datetime.utcnow().timestamp()
             return redirect('/owner')
 
     return render_template_string(owner_login_html, error=error)
@@ -2018,6 +2052,8 @@ def owner_delete_org(org_id):
     name = org.name
     try:
         log_owner_action('delete_org', target_org_id=org.id, details=f'name={name}, email={org.owner_email}')
+        # Audit-лог сохраняем, но обнуляем ссылку на удаляемую org, иначе ForeignKey блокирует delete
+        OwnerAuditLog.query.filter_by(target_org_id=org.id).update({'target_org_id': None})
         db.session.delete(org)
         db.session.commit()
         flash(f'Компания «{name}» и все её данные удалены.', 'success')

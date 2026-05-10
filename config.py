@@ -59,3 +59,7 @@ class Config:
     # Защита от брутфорса
     MAX_LOGIN_ATTEMPTS = 5
     LOGIN_LOCKOUT_MINUTES = 15
+
+    # Owner-панель: более жёсткий лимит попыток + таймаут сессии
+    OWNER_MAX_LOGIN_ATTEMPTS = 3
+    OWNER_SESSION_TIMEOUT_MINUTES = 120  # 2 часа неактивности
