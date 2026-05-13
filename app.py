@@ -484,6 +484,33 @@ def _get_or_create_active_revision(org_id, location_id, user_id):
     return rev
 
 
+def _link_product_to_open_revisions(org_id, product_id, user_id):
+    """Создаёт placeholder RevisionItem(qty=0) для каждой открытой (in_progress)
+    ревизии компании, чтобы новый товар сразу попал в подсчёт и в итоговый отчёт.
+    Возвращает количество затронутых ревизий.
+    """
+    open_revs = Revision.query.filter_by(org_id=org_id, status='in_progress').all()
+    count = 0
+    for rev in open_revs:
+        if not rev.location_id:
+            continue
+        exists = RevisionItem.query.filter_by(
+            revision_id=rev.id, product_id=product_id
+        ).first()
+        if exists:
+            continue
+        placeholder = RevisionItem(
+            revision_id=rev.id,
+            product_id=product_id,
+            location_id=rev.location_id,
+            quantity=0,
+            added_by_user_id=user_id,
+        )
+        db.session.add(placeholder)
+        count += 1
+    return count
+
+
 def _generate_product_code(org_id):
     """Сгенерировать уникальный код товара формата P{org_id}-{NNN}."""
     prefix = f'P{org_id}-'
@@ -695,7 +722,10 @@ def admin_add_product():
     unit = (request.form.get('unit') or 'шт').strip() or 'шт'
     code = (request.form.get('code') or '').strip()
 
+    is_xhr = request.headers.get('X-Requested-With') == 'XMLHttpRequest'
     if not name:
+        if is_xhr:
+            return jsonify({'ok': False, 'error': 'Введите название товара.'}), 400
         flash('Введите название товара.', 'error')
         return redirect('/admin#tab-products')
 
@@ -721,16 +751,39 @@ def admin_add_product():
             code = _generate_product_code(org.id)
         else:
             if Product.query.filter_by(org_id=org.id, code=code).first():
+                if is_xhr:
+                    db.session.rollback()
+                    return jsonify({'ok': False, 'error': f'Товар с кодом «{code}» уже существует.'}), 400
                 flash(f'Товар с кодом «{code}» уже существует.', 'error')
                 db.session.rollback()
                 return redirect('/admin#tab-products')
 
         p = Product(org_id=org.id, name=name, category_id=cat_id, unit=unit, code=code)
         db.session.add(p)
+        db.session.flush()
+
+        # Привязываем новый товар ко всем открытым ревизиям компании (placeholder qty=0),
+        # чтобы он сразу попал в подсчёт оператора и в итоговый отчёт.
+        linked_revs = _link_product_to_open_revisions(org.id, p.id, current_user.raw_id)
+
         db.session.commit()
+        if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
+            cat_name = ''
+            if cat_id:
+                c2 = Category.query.get(cat_id)
+                cat_name = c2.name if c2 else ''
+            msg = f'Товар «{name}» добавлен.'
+            if linked_revs:
+                msg += f' Добавлен в открытые ревизии ({linked_revs}).'
+            return jsonify({'ok': True, 'msg': msg, 'product': {
+                'id': p.id, 'name': p.name, 'code': p.code or '—', 'unit': p.unit,
+                'category_id': p.category_id, 'category_name': cat_name,
+            }})
         flash(f'Товар «{name}» добавлен (код {code}).', 'success')
     except Exception as e:
         db.session.rollback()
+        if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
+            return jsonify({'ok': False, 'error': str(e)}), 400
         flash(f'Ошибка: {e}', 'error')
     return redirect('/admin#tab-products')
 
@@ -738,9 +791,12 @@ def admin_add_product():
 @app.route('/admin/products/edit/<int:pid>', methods=['POST'])
 @admin_required
 def admin_edit_product(pid):
+    is_xhr = request.headers.get('X-Requested-With') == 'XMLHttpRequest'
     org = _current_org()
     p = Product.query.filter_by(id=pid, org_id=org.id).first()
     if not p:
+        if is_xhr:
+            return jsonify({'ok': False, 'error': 'Товар не найден.'}), 404
         flash('Товар не найден.', 'error')
         return redirect('/admin#tab-products')
     name = (request.form.get('name') or '').strip()
@@ -748,6 +804,8 @@ def admin_edit_product(pid):
     unit = (request.form.get('unit') or 'шт').strip() or 'шт'
     code = (request.form.get('code') or '').strip()
     if not name:
+        if is_xhr:
+            return jsonify({'ok': False, 'error': 'Название не может быть пустым.'}), 400
         flash('Название не может быть пустым.', 'error')
         return redirect('/admin#tab-products')
     try:
@@ -763,6 +821,9 @@ def admin_edit_product(pid):
                 Product.org_id == org.id, Product.code == code, Product.id != p.id
             ).first()
             if dup:
+                if is_xhr:
+                    db.session.rollback()
+                    return jsonify({'ok': False, 'error': 'Код уже используется другим товаром.'}), 400
                 flash('Код уже используется другим товаром.', 'error')
                 db.session.rollback()
                 return redirect('/admin#tab-products')
@@ -770,9 +831,13 @@ def admin_edit_product(pid):
         elif not code:
             p.code = _generate_product_code(org.id) if not p.code else p.code
         db.session.commit()
+        if is_xhr:
+            return jsonify({'ok': True, 'msg': 'Товар обновлён.'})
         flash('Товар обновлён.', 'success')
     except Exception as e:
         db.session.rollback()
+        if is_xhr:
+            return jsonify({'ok': False, 'error': str(e)}), 400
         flash(f'Ошибка: {e}', 'error')
     return redirect('/admin#tab-products')
 
@@ -780,20 +845,42 @@ def admin_edit_product(pid):
 @app.route('/admin/products/delete/<int:pid>', methods=['POST'])
 @admin_required
 def admin_delete_product(pid):
+    is_xhr = request.headers.get('X-Requested-With') == 'XMLHttpRequest'
     org = _current_org()
     p = Product.query.filter_by(id=pid, org_id=org.id).first()
     if not p:
+        if is_xhr:
+            return jsonify({'ok': False, 'error': 'Товар не найден.'}), 404
         flash('Товар не найден.', 'error')
         return redirect('/admin#tab-products')
     try:
         from models import RevisionItem
+        # Считаем, в скольких открытых ревизиях есть позиции этого товара —
+        # это число и покажем админу для подтверждения изменений.
+        open_rev_ids = [r.id for r in Revision.query.filter_by(
+            org_id=org.id, status='in_progress'
+        ).all()]
+        removed_from_open = 0
+        if open_rev_ids:
+            removed_from_open = RevisionItem.query.filter(
+                RevisionItem.product_id == p.id,
+                RevisionItem.revision_id.in_(open_rev_ids),
+            ).count()
+        prod_name = p.name
         RevisionItem.query.filter_by(product_id=p.id).delete(synchronize_session=False)
         ProductNorm.query.filter_by(product_id=p.id).delete(synchronize_session=False)
         db.session.delete(p)
         db.session.commit()
+        if is_xhr:
+            msg = f'Товар «{prod_name}» удалён.'
+            if removed_from_open:
+                msg += f' Убран из открытых ревизий ({removed_from_open}).'
+            return jsonify({'ok': True, 'msg': msg})
         flash('Товар удалён.', 'success')
     except Exception as e:
         db.session.rollback()
+        if is_xhr:
+            return jsonify({'ok': False, 'error': str(e)}), 400
         flash(f'Ошибка: {e}', 'error')
     return redirect('/admin#tab-products')
 
@@ -1155,12 +1242,15 @@ def revision():
             norms_map[n.product_id] = n.norm_qty
 
     # Активная ревизия локации (не создаём — только читаем)
+    # Показываем и in_progress, и pending (пока ждём решения администратора)
     current_rev = None
     qty_map = {}  # product_id -> сумма quantity в активной ревизии на этой локации
     if selected_loc:
-        current_rev = Revision.query.filter_by(
-            org_id=org.id, location_id=selected_loc.id, status='in_progress'
-        ).first()
+        current_rev = Revision.query.filter(
+            Revision.org_id == org.id,
+            Revision.location_id == selected_loc.id,
+            Revision.status.in_(['in_progress', 'pending']),
+        ).order_by(Revision.created_at.desc()).first()
         if current_rev:
             items = RevisionItem.query.filter_by(
                 revision_id=current_rev.id, location_id=selected_loc.id
@@ -1227,6 +1317,13 @@ def revision_add():
     prod = Product.query.filter_by(id=product_id, org_id=org.id).first()
     if not loc or not prod:
         return jsonify({'ok': False, 'error': 'not found'}), 404
+
+    # Нельзя добавлять позиции, пока ревизия ожидает подтверждения администратором
+    pending_rev = Revision.query.filter_by(
+        org_id=org.id, location_id=loc.id, status='pending'
+    ).first()
+    if pending_rev:
+        return jsonify({'ok': False, 'error': 'Ревизия ожидает подтверждения администратором'}), 400
 
     try:
         rev = _get_or_create_active_revision(org.id, loc.id, current_user.raw_id)
@@ -1452,11 +1549,12 @@ def _build_revision_xlsx(rev):
                     elif 'НА ДАТУ:' in val.upper():
                         cell.value = f'НА ДАТУ: {today_str}'
 
-            # Заполняем остаток по коду из колонки B (2)
+            # Заполняем остаток по коду из колонки B (2). Нулевые остатки тоже выводим —
+            # они отражают, что товар присутствовал в ревизии, но фактически пуст.
             code_cell = ws.cell(row=row, column=2).value
             if code_cell is not None:
                 code_str = str(code_cell).strip()
-                if code_str in aggregated and aggregated[code_str] > 0:
+                if code_str in aggregated:
                     ws.cell(row=row, column=7, value=aggregated[code_str])
 
         buf = BytesIO()
@@ -1588,10 +1686,10 @@ def admin_revision_reject(rev_id):
         flash('Ревизия не в статусе ожидания.', 'error')
         return redirect('/admin#tab-requests')
     try:
-        rev.status = 'cancelled'
-        rev.finished_at = datetime.utcnow()
+        rev.status = 'in_progress'
+        rev.finished_at = None
         db.session.commit()
-        flash('Запрос отклонён.', 'success')
+        flash('Ревизия возвращена на пересчёт. Оператор может продолжить подсчёт.', 'success')
     except Exception as e:
         db.session.rollback()
         flash(f'Ошибка: {e}', 'error')
@@ -3459,16 +3557,14 @@ hr.soft { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 
           <div class="cat-section" data-cat="{{ cat.name }}">
             <div class="cat-title">{{ cat.name }} · {{ items|length }}</div>
             {% for p in items %}
-            <div class="row product-row" data-name="{{ p.name|lower }}" data-code="{{ (p.code or '')|lower }}">
+            <div class="row product-row" id="prod-row-{{ p.id }}" data-name="{{ p.name|lower }}" data-code="{{ (p.code or '')|lower }}">
               <div style="flex:1;">
                 <div class="name">{{ p.name }}</div>
                 <div class="meta">{{ p.code or '—' }} · {{ p.unit }}</div>
               </div>
               <div class="row-actions">
                 <button class="btn btn-small" onclick='openEditProduct({{ p.id }}, {{ p.name|tojson }}, {{ (p.code or "")|tojson }}, {{ p.unit|tojson }}, {{ (p.category_id or 0) }})'>✎</button>
-                <form method="post" action="/admin/products/delete/{{ p.id }}" onsubmit="return confirm('Удалить «{{ p.name }}»?');" style="display:inline;">
-                  <button class="btn btn-danger btn-small" type="submit">×</button>
-                </form>
+                <button class="btn btn-danger btn-small" onclick="deleteProduct({{ p.id }}, {{ p.name|tojson }}, document.getElementById('prod-row-{{ p.id }}'))">×</button>
               </div>
             </div>
             {% endfor %}
@@ -3479,16 +3575,14 @@ hr.soft { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 
         <div class="cat-section" data-cat="без категории">
           <div class="cat-title">Без категории · {{ uncat|length }}</div>
           {% for p in uncat %}
-          <div class="row product-row" data-name="{{ p.name|lower }}" data-code="{{ (p.code or '')|lower }}">
+          <div class="row product-row" id="prod-row-{{ p.id }}" data-name="{{ p.name|lower }}" data-code="{{ (p.code or '')|lower }}">
             <div style="flex:1;">
               <div class="name">{{ p.name }}</div>
               <div class="meta">{{ p.code or '—' }} · {{ p.unit }}</div>
             </div>
             <div class="row-actions">
               <button class="btn btn-small" onclick='openEditProduct({{ p.id }}, {{ p.name|tojson }}, {{ (p.code or "")|tojson }}, {{ p.unit|tojson }}, 0)'>✎</button>
-              <form method="post" action="/admin/products/delete/{{ p.id }}" onsubmit="return confirm('Удалить «{{ p.name }}»?');" style="display:inline;">
-                <button class="btn btn-danger btn-small" type="submit">×</button>
-              </form>
+              <button class="btn btn-danger btn-small" onclick="deleteProduct({{ p.id }}, {{ p.name|tojson }}, document.getElementById('prod-row-{{ p.id }}'))">×</button>
             </div>
           </div>
           {% endfor %}
@@ -3649,8 +3743,8 @@ hr.soft { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 
             <form method="post" action="/admin/revisions/confirm/{{ r.id }}" style="display:inline;">
               <button class="btn btn-primary btn-small" type="submit">✅ Подтвердить</button>
             </form>
-            <form method="post" action="/admin/revisions/reject/{{ r.id }}" onsubmit="return confirm('Отклонить ревизию? Она будет отменена.');" style="display:inline;">
-              <button class="btn btn-danger btn-small" type="submit">❌ Отклонить</button>
+            <form method="post" action="/admin/revisions/reject/{{ r.id }}" onsubmit="return confirm('Вернуть ревизию на пересчёт? Оператор сможет продолжить подсчёт.');" style="display:inline;">
+              <button class="btn btn-small" style="background:#f59e0b;color:#fff;" type="submit">↩ На пересчёт</button>
             </form>
           </div>
         </div>
@@ -3697,7 +3791,7 @@ hr.soft { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 
 <div class="modal-backdrop" id="modal-add-product" onclick="if(event.target===this) closeModal('modal-add-product')">
   <div class="modal">
     <h3>Новый товар</h3>
-    <form method="post" action="/admin/products/add">
+    <form id="add-prod-form" onsubmit="submitAddProduct(event)">
       <div class="form-group">
         <label>Название*</label>
         <input class="input" name="name" required maxlength="300" placeholder="Кола 0.5л">
@@ -3734,7 +3828,7 @@ hr.soft { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 
 <div class="modal-backdrop" id="modal-edit-product" onclick="if(event.target===this) closeModal('modal-edit-product')">
   <div class="modal">
     <h3>Редактировать товар</h3>
-    <form method="post" id="edit-prod-form">
+    <form id="edit-prod-form" onsubmit="submitEditProduct(event)">
       <div class="form-group">
         <label>Название*</label>
         <input class="input" name="name" id="edit-name" required maxlength="300">
@@ -3872,6 +3966,87 @@ async function copyAllCreds(email, login, pwd) {
   const text = 'Email: ' + email + '\\nЛогин: ' + login + '\\nПароль: ' + pwd;
   const ok = await copyToClipboard(text);
   adminToast(ok ? '✓ Все данные скопированы' : 'Не удалось скопировать', ok ? 'success' : 'error');
+}
+
+async function submitAddProduct(ev) {
+  ev.preventDefault();
+  const form = document.getElementById('add-prod-form');
+  const btn = form.querySelector('button[type=submit]');
+  const origText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Сохранение…';
+  try {
+    const res = await fetch('/admin/products/add', {
+      method: 'POST',
+      body: new FormData(form),
+      headers: {'X-Requested-With': 'XMLHttpRequest'},
+    });
+    const data = await res.json();
+    if (data.ok) {
+      closeModal('modal-add-product');
+      form.reset();
+      document.getElementById('new-cat-wrap').style.display = 'none';
+      const catSel = document.getElementById('add-prod-cat');
+      if (catSel) catSel.name = 'category_id';
+      adminToast('✓ ' + data.msg, 'success');
+      setTimeout(() => window.location.href = '/admin#tab-products', 900);
+    } else {
+      adminToast('✖ ' + (data.error || 'Ошибка'), 'error');
+    }
+  } catch(e) {
+    adminToast('✖ ' + e, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = origText;
+  }
+}
+
+async function deleteProduct(pid, name, rowEl) {
+  if (!confirm('Удалить «' + name + '»?')) return;
+  try {
+    const res = await fetch('/admin/products/delete/' + pid, {
+      method: 'POST',
+      headers: {'X-Requested-With': 'XMLHttpRequest'},
+    });
+    const data = await res.json();
+    if (data.ok) {
+      if (rowEl) rowEl.remove();
+      adminToast('✓ ' + (data.msg || ('Товар «' + name + '» удалён')), 'success');
+    } else {
+      adminToast('✖ ' + (data.error || 'Ошибка'), 'error');
+    }
+  } catch(e) {
+    adminToast('✖ ' + e, 'error');
+  }
+}
+
+async function submitEditProduct(ev) {
+  ev.preventDefault();
+  const form = document.getElementById('edit-prod-form');
+  const btn = form.querySelector('button[type=submit]');
+  const origText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Сохранение…';
+  try {
+    const res = await fetch(form.action, {
+      method: 'POST',
+      body: new FormData(form),
+      headers: {'X-Requested-With': 'XMLHttpRequest'},
+    });
+    const data = await res.json();
+    if (data.ok) {
+      closeModal('modal-edit-product');
+      adminToast('✓ Товар обновлён', 'success');
+      setTimeout(() => window.location.reload(), 800);
+    } else {
+      adminToast('✖ ' + (data.error || 'Ошибка'), 'error');
+    }
+  } catch(e) {
+    adminToast('✖ ' + e, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = origText;
+  }
 }
 
 async function uploadImport(ev) {
