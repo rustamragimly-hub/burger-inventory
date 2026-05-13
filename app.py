@@ -5116,6 +5116,39 @@ textarea.broadcast-area:focus { outline: none; border-color: rgba(124,108,240,0.
 }
 '''
 
+_OWNER_PAGE_HEAD = '''<!DOCTYPE html>
+<html lang="ru"><head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>__TITLE__ — Revisi Owner</title>
+{{ owner_pwa_head|safe }}
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
+<style>''' + _OWNER_BASE_CSS + '''</style>
+</head><body>
+<div class="blob blob-1"></div>
+<div class="blob blob-2"></div>
+<header class="owner-header">
+  <div class="brand">📊 <span>Панель владельца</span></div>
+  <div class="right">
+    <span class="owner-email">{{ owner_email }}</span>
+    <a class="btn-logout" href="/owner/logout">Выйти</a>
+  </div>
+</header>
+{% with messages = get_flashed_messages(with_categories=true) %}
+{% if messages %}
+<div class="flash-messages">
+  {% for cat, msg in messages %}
+  <div class="flash-msg flash-{{ cat }}">{{ msg }}</div>
+  {% endfor %}
+</div>
+{% endif %}
+{% endwith %}
+'''
+
+_OWNER_PAGE_FOOT = '''
+</body></html>'''
+
+
 # Список вкладок для top + bottom nav
 _OWNER_TABS = [
     ('dashboard', '/owner', '📊', 'Дашборд'),
@@ -5729,39 +5762,6 @@ function filterOrgs(q) {
 </script>
 </body>
 </html>'''
-
-
-_OWNER_PAGE_HEAD = '''<!DOCTYPE html>
-<html lang="ru"><head>
-<meta charset="UTF-8"/>
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>__TITLE__ — Revisi Owner</title>
-{{ owner_pwa_head|safe }}
-<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
-<style>''' + _OWNER_BASE_CSS + '''</style>
-</head><body>
-<div class="blob blob-1"></div>
-<div class="blob blob-2"></div>
-<header class="owner-header">
-  <div class="brand">📊 <span>Панель владельца</span></div>
-  <div class="right">
-    <span class="owner-email">{{ owner_email }}</span>
-    <a class="btn-logout" href="/owner/logout">Выйти</a>
-  </div>
-</header>
-{% with messages = get_flashed_messages(with_categories=true) %}
-{% if messages %}
-<div class="flash-messages">
-  {% for cat, msg in messages %}
-  <div class="flash-msg flash-{{ cat }}">{{ msg }}</div>
-  {% endfor %}
-</div>
-{% endif %}
-{% endwith %}
-'''
-
-_OWNER_PAGE_FOOT = '''
-</body></html>'''
 
 
 # ============== ДЕТАЛИ КОМПАНИИ ==============
