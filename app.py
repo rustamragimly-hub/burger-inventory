@@ -26,7 +26,7 @@ import click
 from config import Config
 from models import (
     db, Organization, User, Location, OwnerUser, LoginAttempt,
-    Category, Product, ProductNorm, Revision, RevisionItem,
+    Category, Product, ProductNorm, LocationProduct, Revision, RevisionItem,
     OwnerAuditLog, SupportTicket, SupportTicketReply, CatalogProduct,
 )
 
@@ -484,15 +484,48 @@ def _get_or_create_active_revision(org_id, location_id, user_id):
     return rev
 
 
+def _seed_location_assortment_if_empty(org_id):
+    """Если у компании ещё ни на одной локации не настроен ассортимент
+    (нет ни одной строки в LocationProduct) — заполняем его «всё × все»:
+    каждый существующий товар приписываем ко всем существующим локациям.
+    Это сохраняет старое поведение для компаний, у которых уже что-то накоплено,
+    до тех пор пока админ не начнёт настраивать списки вручную.
+    """
+    loc_ids = [l.id for l in Location.query.filter_by(org_id=org_id).all()]
+    if not loc_ids:
+        return False
+    has_any = db.session.query(LocationProduct.id).filter(
+        LocationProduct.location_id.in_(loc_ids)
+    ).first()
+    if has_any:
+        return False
+    prod_ids = [p.id for p in Product.query.filter_by(org_id=org_id, is_active=True).all()]
+    if not prod_ids:
+        return False
+    for lid in loc_ids:
+        for pid in prod_ids:
+            db.session.add(LocationProduct(location_id=lid, product_id=pid))
+    db.session.commit()
+    return True
+
+
+def _product_in_location(location_id, product_id):
+    return db.session.query(LocationProduct.id).filter_by(
+        location_id=location_id, product_id=product_id
+    ).first() is not None
+
+
 def _link_product_to_open_revisions(org_id, product_id, user_id):
     """Создаёт placeholder RevisionItem(qty=0) для каждой открытой (in_progress)
-    ревизии компании, чтобы новый товар сразу попал в подсчёт и в итоговый отчёт.
+    ревизии компании — но только там, где товар входит в ассортимент локации.
     Возвращает количество затронутых ревизий.
     """
     open_revs = Revision.query.filter_by(org_id=org_id, status='in_progress').all()
     count = 0
     for rev in open_revs:
         if not rev.location_id:
+            continue
+        if not _product_in_location(rev.location_id, product_id):
             continue
         exists = RevisionItem.query.filter_by(
             revision_id=rev.id, product_id=product_id
@@ -541,12 +574,25 @@ def admin_panel():
     products = Product.query.filter_by(org_id=org.id).order_by(Product.name).all()
     users = User.query.filter_by(org_id=org.id).order_by(User.created_at).all()
 
+    # Если ассортимент локаций ещё не настраивался — один раз сидим «всё × все»,
+    # чтобы старые компании не получили пустые локации после выкатки фичи.
+    _seed_location_assortment_if_empty(org.id)
+
     # Нормы: {(product_id, location_id): qty}
     norms_map = {}
     if products and locations:
         product_ids = [p.id for p in products]
         for n in ProductNorm.query.filter(ProductNorm.product_id.in_(product_ids)).all():
             norms_map[(n.product_id, n.location_id)] = n.norm_qty
+
+    # Ассортимент: {location_id: [product_id, ...]} — для встроенного редактора
+    assortment_map = {}
+    if locations:
+        loc_ids = [l.id for l in locations]
+        for lp in LocationProduct.query.filter(
+            LocationProduct.location_id.in_(loc_ids)
+        ).all():
+            assortment_map.setdefault(lp.location_id, []).append(lp.product_id)
 
     # Группировка товаров по категориям
     cat_map = {c.id: c for c in categories}
@@ -609,6 +655,7 @@ def admin_panel():
         users=users,
         current_user_id=current_user.raw_id,
         norms_map=norms_map,
+        assortment_map=assortment_map,
         days_left=trial_days_left(org),
         user_limit_reached=user_limit_reached,
         free_max_users=Config.FREE_MAX_USERS,
@@ -653,6 +700,8 @@ def admin_delete_location(loc_id):
     try:
         # Удалить нормы, привязанные к локации
         ProductNorm.query.filter_by(location_id=loc.id).delete(synchronize_session=False)
+        # Удалить привязки товаров к локации (ассортимент)
+        LocationProduct.query.filter_by(location_id=loc.id).delete(synchronize_session=False)
         # Удалить элементы ревизий на этой локации
         from models import RevisionItem, Revision
         RevisionItem.query.filter_by(location_id=loc.id).delete(synchronize_session=False)
@@ -664,6 +713,60 @@ def admin_delete_location(loc_id):
         db.session.rollback()
         flash(f'Не удалось удалить локацию: {e}', 'error')
     return redirect('/admin#tab-locations')
+
+
+# ============== АДМИН: АССОРТИМЕНТ ЛОКАЦИЙ ==============
+@app.route('/admin/locations/<int:loc_id>/assortment/toggle/<int:pid>', methods=['POST'])
+@admin_required
+def admin_assortment_toggle(loc_id, pid):
+    """Включить/выключить товар в ассортименте локации. Возвращает новое состояние."""
+    org = _current_org()
+    loc = Location.query.filter_by(id=loc_id, org_id=org.id).first()
+    prod = Product.query.filter_by(id=pid, org_id=org.id).first()
+    if not loc or not prod:
+        return jsonify({'ok': False, 'error': 'Локация или товар не найдены.'}), 404
+    try:
+        existing = LocationProduct.query.filter_by(
+            location_id=loc.id, product_id=prod.id
+        ).first()
+        if existing:
+            db.session.delete(existing)
+            # Если у локации есть открытая ревизия с непустыми позициями этого товара,
+            # их не удаляем — реально посчитанное оставляем в ревизии. Но placeholder
+            # (qty=0) подчищаем, чтобы он не висел в отчёте «нулём».
+            open_revs = Revision.query.filter_by(
+                org_id=org.id, location_id=loc.id, status='in_progress'
+            ).all()
+            for rev in open_revs:
+                RevisionItem.query.filter_by(
+                    revision_id=rev.id, product_id=prod.id, quantity=0
+                ).delete(synchronize_session=False)
+            db.session.commit()
+            return jsonify({'ok': True, 'selected': False})
+        else:
+            db.session.add(LocationProduct(location_id=loc.id, product_id=prod.id))
+            # Если есть открытая ревизия — сразу создаём placeholder, чтобы товар
+            # появился у оператора и попал в отчёт.
+            linked = _link_product_to_open_revisions(org.id, prod.id, current_user.raw_id)
+            db.session.commit()
+            return jsonify({'ok': True, 'selected': True, 'linked_to_revisions': linked})
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'ok': False, 'error': str(e)}), 400
+
+
+@app.route('/admin/locations/<int:loc_id>/assortment', methods=['GET'])
+@admin_required
+def admin_assortment_get(loc_id):
+    """Возвращает текущее множество выбранных товаров для локации (id-шников)."""
+    org = _current_org()
+    loc = Location.query.filter_by(id=loc_id, org_id=org.id).first()
+    if not loc:
+        return jsonify({'ok': False, 'error': 'Локация не найдена.'}), 404
+    selected = [lp.product_id for lp in LocationProduct.query.filter_by(
+        location_id=loc.id
+    ).all()]
+    return jsonify({'ok': True, 'selected': selected})
 
 
 # ============== АДМИН: КАТЕГОРИИ ==============
@@ -869,6 +972,7 @@ def admin_delete_product(pid):
         prod_name = p.name
         RevisionItem.query.filter_by(product_id=p.id).delete(synchronize_session=False)
         ProductNorm.query.filter_by(product_id=p.id).delete(synchronize_session=False)
+        LocationProduct.query.filter_by(product_id=p.id).delete(synchronize_session=False)
         db.session.delete(p)
         db.session.commit()
         if is_xhr:
@@ -1225,7 +1329,7 @@ def revision():
 
     locations = Location.query.filter_by(org_id=org.id).order_by(Location.sort_order, Location.name).all()
     categories = Category.query.filter_by(org_id=org.id).order_by(Category.sort_order, Category.name).all()
-    products = Product.query.filter_by(org_id=org.id, is_active=True).order_by(Product.name).all()
+    all_products = Product.query.filter_by(org_id=org.id, is_active=True).order_by(Product.name).all()
 
     # Выбранная локация (по ?location=Name) — иначе первая
     selected_name = request.args.get('location')
@@ -1234,6 +1338,18 @@ def revision():
         selected_loc = next((l for l in locations if l.name == selected_name), None)
     if not selected_loc and locations:
         selected_loc = locations[0]
+
+    # Ассортимент локации: показываем только товары, явно привязанные к ней.
+    # Бэк-компат: если у компании ни на одной локации не настроен ассортимент,
+    # один раз заполняем «всё × все», чтобы старые клиенты не получили пустые экраны.
+    _seed_location_assortment_if_empty(org.id)
+    if selected_loc:
+        allowed_ids = {lp.product_id for lp in LocationProduct.query.filter_by(
+            location_id=selected_loc.id
+        ).all()}
+        products = [p for p in all_products if p.id in allowed_ids]
+    else:
+        products = []
 
     # Нормы для всех товаров этой локации
     norms_map = {}  # product_id -> norm_qty
@@ -3421,6 +3537,57 @@ select.input option { background: #1d1635; color: white; }
 .copy-btn:active { transform: scale(0.95); }
 .row-actions { display: flex; gap: 6px; }
 hr.soft { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 0; }
+
+/* === Ассортимент локаций === */
+.assort-wrap { display: grid; grid-template-columns: 240px 1fr; gap: 16px; }
+.assort-loc-list { display: flex; flex-direction: column; gap: 6px; }
+.assort-loc-item {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 10px 12px; border-radius: 10px; cursor: pointer;
+  background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.06);
+  font-size: 14px; transition: all 0.15s;
+}
+.assort-loc-item:hover { background: rgba(255,255,255,0.07); }
+.assort-loc-item.active { background: linear-gradient(135deg, #7c6cf0, #a855f7); border-color: transparent; }
+.assort-loc-count {
+  font-size: 11px; font-weight: 600; padding: 2px 8px;
+  background: rgba(0,0,0,0.3); border-radius: 999px;
+}
+.assort-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.assort-col {
+  background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 12px; padding: 10px; min-height: 320px; max-height: 60vh;
+  display: flex; flex-direction: column;
+}
+.assort-col-head {
+  display: flex; justify-content: space-between; align-items: center;
+  font-size: 13px; font-weight: 600; color: rgba(255,255,255,0.85);
+  margin-bottom: 8px; padding: 0 4px;
+}
+.assort-list { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; }
+.assort-item {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 8px 10px; border-radius: 8px; font-size: 13px;
+  background: rgba(255,255,255,0.03); cursor: pointer; transition: all 0.1s;
+}
+.assort-item:hover { background: rgba(124,108,240,0.15); }
+.assort-item .pname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.assort-item .pcode { font-size: 11px; color: rgba(255,255,255,0.45); margin-left: 8px; }
+.assort-item .ai-btn {
+  flex-shrink: 0; width: 26px; height: 26px; border-radius: 6px; border: none;
+  font-size: 14px; cursor: pointer; display: flex; align-items: center; justify-content: center;
+}
+.assort-item .ai-btn-add { background: #10b981; color: white; }
+.assort-item .ai-btn-rm { background: #ef4444; color: white; }
+.assort-item.muted { opacity: 0.4; pointer-events: none; }
+.assort-empty { text-align: center; padding: 24px 12px; color: rgba(255,255,255,0.4); font-size: 12px; }
+@media (max-width: 800px) {
+  .assort-wrap { grid-template-columns: 1fr; }
+  .assort-loc-list { flex-direction: row; flex-wrap: wrap; }
+  .assort-grid { grid-template-columns: 1fr; }
+  .assort-col { max-height: 50vh; }
+}
+
 @media (max-width: 600px) {
   .header { padding: 12px 14px; }
   .header .brand .name { font-size: 15px; max-width: 180px; }
@@ -3456,6 +3623,7 @@ hr.soft { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 
     <div class="tab-pill active" data-tab="tab-locations" onclick="switchTab('tab-locations')">📍 Локации</div>
     <div class="tab-pill" data-tab="tab-categories" onclick="switchTab('tab-categories')">🗂 Категории</div>
     <div class="tab-pill" data-tab="tab-products" onclick="switchTab('tab-products')">📦 Товары</div>
+    <div class="tab-pill" data-tab="tab-assortment" onclick="switchTab('tab-assortment')">🍱 Ассортимент</div>
     <div class="tab-pill" data-tab="tab-users" onclick="switchTab('tab-users')">👥 Пользователи</div>
     <div class="tab-pill" data-tab="tab-norms" onclick="switchTab('tab-norms')">📏 Нормы</div>
     <div class="tab-pill" data-tab="tab-import" onclick="switchTab('tab-import')">📥 Импорт</div>
@@ -3594,6 +3762,55 @@ hr.soft { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 
           <div class="empty-title">Пока нет товаров</div>
           <div class="empty-hint">Нажмите «+ Добавить товар» или загрузите Excel во вкладке «Импорт».</div>
         </div>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- Tab: Ассортимент -->
+  <div class="tab-content" id="tab-assortment">
+    <div class="card">
+      <h2>Ассортимент локаций</h2>
+      <div style="font-size:13px;color:rgba(255,255,255,0.6);margin-bottom:14px;">
+        Выберите локацию слева — справа появятся два списка: «Не в ассортименте» и «В ассортименте». Товары, не добавленные ни в одну локацию, не видны операторам и не попадают в отчёт.
+      </div>
+      {% if not locations %}
+        <div class="empty">
+          <div class="empty-icon">📍</div>
+          <div class="empty-title">Сначала добавьте локации</div>
+          <div class="empty-hint">Без локаций ассортимент настраивать некуда.</div>
+        </div>
+      {% elif not products %}
+        <div class="empty">
+          <div class="empty-icon">📦</div>
+          <div class="empty-title">Сначала добавьте товары</div>
+          <div class="empty-hint">В разделе «Товары» создайте позиции, потом разнесите их по локациям.</div>
+        </div>
+      {% else %}
+      <div class="assort-wrap">
+        <div class="assort-loc-list">
+          {% for loc in locations %}
+          <div class="assort-loc-item{% if loop.first %} active{% endif %}" data-loc-id="{{ loc.id }}" onclick="selectAssortLoc({{ loc.id }})">
+            <span>📍 {{ loc.name }}</span>
+            <span class="assort-loc-count" id="assort-count-{{ loc.id }}">{{ assortment_map.get(loc.id, [])|length }}</span>
+          </div>
+          {% endfor %}
+        </div>
+        <div class="assort-cols">
+          <div class="search-bar" style="margin-bottom:10px;">
+            <input class="input" id="assort-search" type="text" placeholder="🔎 Поиск по товарам" oninput="filterAssort()">
+          </div>
+          <div class="assort-grid">
+            <div class="assort-col">
+              <div class="assort-col-head">Не в ассортименте <span id="assort-avail-count" class="count-pill">0</span></div>
+              <div class="assort-list" id="assort-available"></div>
+            </div>
+            <div class="assort-col">
+              <div class="assort-col-head">В ассортименте <span id="assort-selected-count" class="count-pill">0</span></div>
+              <div class="assort-list" id="assort-selected"></div>
+            </div>
+          </div>
+        </div>
+      </div>
       {% endif %}
     </div>
   </div>
@@ -3903,6 +4120,95 @@ function filterProducts() {
     s.style.display = visible ? '' : 'none';
   });
 }
+
+// === Ассортимент локаций ===
+const ASSORT_PRODUCTS = [
+  {% for p in products %}
+  { id: {{ p.id }}, name: {{ p.name|tojson }}, code: {{ (p.code or '')|tojson }} },
+  {% endfor %}
+];
+const ASSORT_MAP = {
+  {% for loc_id, pids in assortment_map.items() %}
+  "{{ loc_id }}": new Set({{ pids|tojson }}),
+  {% endfor %}
+};
+let ASSORT_CURRENT_LOC = {% if locations %}{{ locations[0].id }}{% else %}null{% endif %};
+
+function selectAssortLoc(locId) {
+  ASSORT_CURRENT_LOC = locId;
+  document.querySelectorAll('.assort-loc-item').forEach(el => {
+    el.classList.toggle('active', String(el.dataset.locId) === String(locId));
+  });
+  renderAssortLists();
+}
+
+function renderAssortLists() {
+  const locId = ASSORT_CURRENT_LOC;
+  if (!locId) return;
+  if (!ASSORT_MAP[locId]) ASSORT_MAP[locId] = new Set();
+  const selSet = ASSORT_MAP[locId];
+  const q = (document.getElementById('assort-search')?.value || '').toLowerCase().trim();
+  const matches = (p) => !q || p.name.toLowerCase().includes(q) || (p.code || '').toLowerCase().includes(q);
+
+  const availEl = document.getElementById('assort-available');
+  const selEl = document.getElementById('assort-selected');
+  const availHtml = [];
+  const selHtml = [];
+  let availCount = 0, selCount = 0;
+  for (const p of ASSORT_PRODUCTS) {
+    if (!matches(p)) continue;
+    const code = p.code ? '<span class="pcode">' + escapeHtml(p.code) + '</span>' : '';
+    if (selSet.has(p.id)) {
+      selCount++;
+      selHtml.push(`<div class="assort-item" data-pid="${p.id}"><span class="pname">${escapeHtml(p.name)}</span>${code}<button class="ai-btn ai-btn-rm" title="Убрать" onclick="toggleAssort(${p.id}, this)">✕</button></div>`);
+    } else {
+      availCount++;
+      availHtml.push(`<div class="assort-item" data-pid="${p.id}"><span class="pname">${escapeHtml(p.name)}</span>${code}<button class="ai-btn ai-btn-add" title="Добавить" onclick="toggleAssort(${p.id}, this)">+</button></div>`);
+    }
+  }
+  availEl.innerHTML = availHtml.length ? availHtml.join('') : '<div class="assort-empty">Ничего не найдено</div>';
+  selEl.innerHTML = selHtml.length ? selHtml.join('') : '<div class="assort-empty">Пока ничего не выбрано</div>';
+  document.getElementById('assort-avail-count').textContent = availCount;
+  document.getElementById('assort-selected-count').textContent = selCount;
+  const totalSel = selSet.size;
+  const badge = document.getElementById('assort-count-' + locId);
+  if (badge) badge.textContent = totalSel;
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function filterAssort() { renderAssortLists(); }
+
+async function toggleAssort(pid, btn) {
+  const locId = ASSORT_CURRENT_LOC;
+  if (!locId) return;
+  btn.disabled = true;
+  try {
+    const res = await fetch('/admin/locations/' + locId + '/assortment/toggle/' + pid, {
+      method: 'POST',
+      headers: {'X-Requested-With': 'XMLHttpRequest'},
+    });
+    const data = await res.json();
+    if (data.ok) {
+      if (!ASSORT_MAP[locId]) ASSORT_MAP[locId] = new Set();
+      if (data.selected) ASSORT_MAP[locId].add(pid);
+      else ASSORT_MAP[locId].delete(pid);
+      renderAssortLists();
+    } else {
+      adminToast('✖ ' + (data.error || 'Ошибка'), 'error');
+      btn.disabled = false;
+    }
+  } catch(e) {
+    adminToast('✖ ' + e, 'error');
+    btn.disabled = false;
+  }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  if (ASSORT_CURRENT_LOC) renderAssortLists();
+});
 
 async function saveNorms() {
   const status = document.getElementById('norms-status');

@@ -149,6 +149,25 @@ class ProductNorm(db.Model):
     )
 
 
+# ============== АССОРТИМЕНТ ЛОКАЦИЙ ==============
+class LocationProduct(db.Model):
+    """Какие товары входят в ассортимент конкретной локации.
+    Если товар не привязан ни к одной локации — он не виден операторам
+    и не попадает в ревизии. Это позволяет держать большой каталог товаров
+    на компании, но строго регулировать, что считается на каждой точке.
+    """
+    __tablename__ = 'location_products'
+
+    id = db.Column(db.Integer, primary_key=True)
+    location_id = db.Column(db.Integer, db.ForeignKey('locations.id'), nullable=False, index=True)
+    product_id = db.Column(db.Integer, db.ForeignKey('products.id'), nullable=False, index=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        db.UniqueConstraint('location_id', 'product_id', name='uq_location_product'),
+    )
+
+
 # ============== РЕВИЗИИ (ОТЧЁТЫ) ==============
 class Revision(db.Model):
     """Сама ревизия — заголовок отчёта."""
