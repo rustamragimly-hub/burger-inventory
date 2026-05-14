@@ -3728,7 +3728,7 @@ hr.soft { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 
             <div class="row product-row" id="prod-row-{{ p.id }}" data-name="{{ p.name|lower }}" data-code="{{ (p.code or '')|lower }}">
               <div style="flex:1;">
                 <div class="name">{{ p.name }}</div>
-                <div class="meta">{{ p.code or '—' }} · {{ p.unit }}</div>
+                <div class="meta">{{ p.unit }}</div>
               </div>
               <div class="row-actions">
                 <button class="btn btn-small" onclick='openEditProduct({{ p.id }}, {{ p.name|tojson }}, {{ (p.code or "")|tojson }}, {{ p.unit|tojson }}, {{ (p.category_id or 0) }})'>✎</button>
@@ -3746,7 +3746,7 @@ hr.soft { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 
           <div class="row product-row" id="prod-row-{{ p.id }}" data-name="{{ p.name|lower }}" data-code="{{ (p.code or '')|lower }}">
             <div style="flex:1;">
               <div class="name">{{ p.name }}</div>
-              <div class="meta">{{ p.code or '—' }} · {{ p.unit }}</div>
+              <div class="meta">{{ p.unit }}</div>
             </div>
             <div class="row-actions">
               <button class="btn btn-small" onclick='openEditProduct({{ p.id }}, {{ p.name|tojson }}, {{ (p.code or "")|tojson }}, {{ p.unit|tojson }}, 0)'>✎</button>
@@ -4157,13 +4157,12 @@ function renderAssortLists() {
   let availCount = 0, selCount = 0;
   for (const p of ASSORT_PRODUCTS) {
     if (!matches(p)) continue;
-    const code = p.code ? '<span class="pcode">' + escapeHtml(p.code) + '</span>' : '';
     if (selSet.has(p.id)) {
       selCount++;
-      selHtml.push(`<div class="assort-item" data-pid="${p.id}"><span class="pname">${escapeHtml(p.name)}</span>${code}<button class="ai-btn ai-btn-rm" title="Убрать" onclick="toggleAssort(${p.id}, this)">✕</button></div>`);
+      selHtml.push(`<div class="assort-item" data-pid="${p.id}"><span class="pname">${escapeHtml(p.name)}</span><button class="ai-btn ai-btn-rm" title="Убрать" onclick="toggleAssort(${p.id}, this)">✕</button></div>`);
     } else {
       availCount++;
-      availHtml.push(`<div class="assort-item" data-pid="${p.id}"><span class="pname">${escapeHtml(p.name)}</span>${code}<button class="ai-btn ai-btn-add" title="Добавить" onclick="toggleAssort(${p.id}, this)">+</button></div>`);
+      availHtml.push(`<div class="assort-item" data-pid="${p.id}"><span class="pname">${escapeHtml(p.name)}</span><button class="ai-btn ai-btn-add" title="Добавить" onclick="toggleAssort(${p.id}, this)">+</button></div>`);
     }
   }
   availEl.innerHTML = availHtml.length ? availHtml.join('') : '<div class="assort-empty">Ничего не найдено</div>';
