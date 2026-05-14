@@ -731,18 +731,21 @@ def admin_assortment_toggle(loc_id, pid):
         ).first()
         if existing:
             db.session.delete(existing)
-            # Если у локации есть открытая ревизия с непустыми позициями этого товара,
-            # их не удаляем — реально посчитанное оставляем в ревизии. Но placeholder
-            # (qty=0) подчищаем, чтобы он не висел в отчёте «нулём».
-            open_revs = Revision.query.filter_by(
+            # Сохраняем синхронизацию ассортимент ↔ отчёт: товар, убранный из
+            # локации, должен исчезнуть и из её открытых ревизий целиком —
+            # и placeholder-нули, и фактические подсчёты. Завершённые ревизии
+            # не трогаем, это исторический отчёт.
+            open_rev_ids = [r.id for r in Revision.query.filter_by(
                 org_id=org.id, location_id=loc.id, status='in_progress'
-            ).all()
-            for rev in open_revs:
-                RevisionItem.query.filter_by(
-                    revision_id=rev.id, product_id=prod.id, quantity=0
+            ).all()]
+            removed_counts = 0
+            if open_rev_ids:
+                removed_counts = RevisionItem.query.filter(
+                    RevisionItem.revision_id.in_(open_rev_ids),
+                    RevisionItem.product_id == prod.id,
                 ).delete(synchronize_session=False)
             db.session.commit()
-            return jsonify({'ok': True, 'selected': False})
+            return jsonify({'ok': True, 'selected': False, 'removed_counts': removed_counts or 0})
         else:
             db.session.add(LocationProduct(location_id=loc.id, product_id=prod.id))
             # Если есть открытая ревизия — сразу создаём placeholder, чтобы товар
@@ -750,6 +753,40 @@ def admin_assortment_toggle(loc_id, pid):
             linked = _link_product_to_open_revisions(org.id, prod.id, current_user.raw_id)
             db.session.commit()
             return jsonify({'ok': True, 'selected': True, 'linked_to_revisions': linked})
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'ok': False, 'error': str(e)}), 400
+
+
+@app.route('/admin/locations/<int:loc_id>/assortment/clear', methods=['POST'])
+@admin_required
+def admin_assortment_clear(loc_id):
+    """Полностью очищает ассортимент локации одним действием.
+    Из открытых ревизий этой локации удаляются ВСЕ позиции (и placeholder-нули,
+    и фактические подсчёты) — чтобы состояние «товара нет в ассортименте»
+    однозначно отражалось в отчёте. Завершённые ревизии не трогаем —
+    это исторический отчёт.
+    """
+    org = _current_org()
+    loc = Location.query.filter_by(id=loc_id, org_id=org.id).first()
+    if not loc:
+        return jsonify({'ok': False, 'error': 'Локация не найдена.'}), 404
+    try:
+        removed = LocationProduct.query.filter_by(location_id=loc.id).count()
+        LocationProduct.query.filter_by(location_id=loc.id).delete(synchronize_session=False)
+        open_rev_ids = [r.id for r in Revision.query.filter_by(
+            org_id=org.id, location_id=loc.id, status='in_progress'
+        ).all()]
+        removed_counts = 0
+        if open_rev_ids:
+            removed_counts = RevisionItem.query.filter(
+                RevisionItem.revision_id.in_(open_rev_ids),
+            ).delete(synchronize_session=False)
+        db.session.commit()
+        return jsonify({
+            'ok': True, 'removed': removed, 'removed_counts': removed_counts or 0,
+            'location': loc.name,
+        })
     except Exception as e:
         db.session.rollback()
         return jsonify({'ok': False, 'error': str(e)}), 400
@@ -3805,7 +3842,10 @@ hr.soft { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 
               <div class="assort-list" id="assort-available"></div>
             </div>
             <div class="assort-col">
-              <div class="assort-col-head">В ассортименте <span id="assort-selected-count" class="count-pill">0</span></div>
+              <div class="assort-col-head">
+                <span>В ассортименте <span id="assort-selected-count" class="count-pill">0</span></span>
+                <button class="btn btn-danger btn-small" id="assort-clear-btn" onclick="clearAssortLoc()" style="padding:4px 10px;font-size:11px;">Убрать все</button>
+              </div>
               <div class="assort-list" id="assort-selected"></div>
             </div>
           </div>
@@ -4179,6 +4219,41 @@ function escapeHtml(s) {
 }
 
 function filterAssort() { renderAssortLists(); }
+
+async function clearAssortLoc() {
+  const locId = ASSORT_CURRENT_LOC;
+  if (!locId) return;
+  const locEl = document.querySelector('.assort-loc-item[data-loc-id="' + locId + '"] span');
+  const locName = locEl ? locEl.textContent.trim() : 'локации';
+  const selSet = ASSORT_MAP[locId] || new Set();
+  if (selSet.size === 0) {
+    adminToast('В ассортименте этой локации уже ничего нет.', 'success');
+    return;
+  }
+  if (!confirm('Убрать все ' + selSet.size + ' товаров из ассортимента ' + locName + '?\\nВНИМАНИЕ: позиции этих товаров в открытых ревизиях этой локации тоже будут удалены, чтобы отчёт отражал реальный ассортимент. Завершённые ревизии не затрагиваются.')) return;
+  const btn = document.getElementById('assort-clear-btn');
+  if (btn) btn.disabled = true;
+  try {
+    const res = await fetch('/admin/locations/' + locId + '/assortment/clear', {
+      method: 'POST',
+      headers: {'X-Requested-With': 'XMLHttpRequest'},
+    });
+    const data = await res.json();
+    if (data.ok) {
+      ASSORT_MAP[locId] = new Set();
+      renderAssortLists();
+      let msg = '✓ Из «' + (data.location || locName) + '» убрано товаров: ' + (data.removed || 0);
+      if (data.removed_counts) msg += ' (позиций в открытых ревизиях: ' + data.removed_counts + ')';
+      adminToast(msg, 'success');
+    } else {
+      adminToast('✖ ' + (data.error || 'Ошибка'), 'error');
+    }
+  } catch(e) {
+    adminToast('✖ ' + e, 'error');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
 
 async function toggleAssort(pid, btn) {
   const locId = ASSORT_CURRENT_LOC;
