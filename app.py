@@ -1926,9 +1926,12 @@ def support_page():
         return redirect('/login')
     user = current_user.user
     if request.method == 'POST':
+        is_xhr = request.headers.get('X-Requested-With') == 'XMLHttpRequest'
         subject = (request.form.get('subject') or '').strip()
         body = (request.form.get('body') or '').strip()
         if not subject or not body:
+            if is_xhr:
+                return jsonify({'ok': False, 'error': 'Заполните тему и текст.'}), 400
             flash('Заполните тему и текст.', 'error')
             return redirect('/support')
         t = SupportTicket(
@@ -1937,6 +1940,8 @@ def support_page():
         )
         db.session.add(t)
         db.session.commit()
+        if is_xhr:
+            return jsonify({'ok': True, 'ticket_id': t.id})
         flash('Тикет создан. Мы ответим в ближайшее время.', 'success')
         return redirect(f'/support/{t.id}')
 
@@ -3241,7 +3246,7 @@ placeholder_html = '''<!DOCTYPE html>
     <div class="info-row"><span class="k">Компания</span><span class="v">{{ org_name }}</span></div>
     <div class="info-row"><span class="k">Trial дней осталось</span><span class="v">{{ days_left }}</span></div>
   </div>
-  <a class="logout-btn" href="/logout">Выйти</a>
+  <a class="logout-btn" href="/logout" onclick="return confirm('Выйти из аккаунта?');">Выйти</a>
 </div>
 </body>
 </html>'''
@@ -3576,19 +3581,84 @@ select.input option { background: #1d1635; color: white; }
 hr.soft { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 0; }
 
 /* === Ассортимент локаций === */
-.assort-wrap { display: grid; grid-template-columns: 240px 1fr; gap: 16px; }
+.assort-wrap { display: grid; grid-template-columns: 260px 1fr; gap: 16px; align-items: start; }
 .assort-loc-list { display: flex; flex-direction: column; gap: 6px; }
 .assort-loc-item {
   display: flex; justify-content: space-between; align-items: center;
   padding: 10px 12px; border-radius: 10px; cursor: pointer;
   background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.06);
-  font-size: 14px; transition: all 0.15s;
+  font-size: 14px; transition: all 0.15s; gap: 8px;
 }
 .assort-loc-item:hover { background: rgba(255,255,255,0.07); }
 .assort-loc-item.active { background: linear-gradient(135deg, #7c6cf0, #a855f7); border-color: transparent; }
+.assort-loc-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.assort-loc-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
 .assort-loc-count {
   font-size: 11px; font-weight: 600; padding: 2px 8px;
   background: rgba(0,0,0,0.3); border-radius: 999px;
+}
+.assort-loc-del {
+  padding: 2px 8px !important; font-size: 14px !important; line-height: 1;
+  opacity: 0.5; transition: opacity 0.15s;
+}
+.assort-loc-item:hover .assort-loc-del,
+.assort-loc-item.active .assort-loc-del { opacity: 1; }
+.assort-loc-add {
+  display: flex; gap: 6px; margin-top: 8px;
+  padding: 8px; background: rgba(255,255,255,0.02); border-radius: 10px;
+  border: 1px dashed rgba(255,255,255,0.12);
+}
+.assort-loc-add .input { flex: 1; min-width: 0; font-size: 13px; padding: 7px 10px; }
+.assort-loc-add .btn { font-size: 12px; padding: 7px 10px; white-space: nowrap; }
+
+/* === Плавающий виджет поддержки === */
+.support-fab {
+  position: fixed; right: 22px; bottom: 22px; z-index: 9000;
+  width: 56px; height: 56px; border-radius: 50%; border: none;
+  background: linear-gradient(135deg, #7c6cf0, #a855f7);
+  color: #fff; font-size: 24px; cursor: pointer;
+  box-shadow: 0 8px 24px rgba(124,108,240,0.45), 0 2px 6px rgba(0,0,0,0.25);
+  display: flex; align-items: center; justify-content: center;
+  transition: transform 0.15s, box-shadow 0.15s;
+}
+.support-fab:hover { transform: translateY(-2px); box-shadow: 0 12px 30px rgba(124,108,240,0.55), 0 4px 8px rgba(0,0,0,0.3); }
+.support-fab:active { transform: translateY(0); }
+.support-fab.is-open { background: linear-gradient(135deg, #ef4444, #f97316); }
+.support-panel {
+  position: fixed; right: 22px; bottom: 92px; z-index: 9000;
+  width: 360px; max-width: calc(100vw - 32px); max-height: calc(100vh - 120px);
+  background: rgba(20, 18, 38, 0.96); backdrop-filter: blur(14px);
+  border: 1px solid rgba(255,255,255,0.1); border-radius: 18px;
+  box-shadow: 0 24px 60px rgba(0,0,0,0.55);
+  display: none; flex-direction: column; overflow: hidden;
+}
+.support-panel.is-open { display: flex; animation: spIn 0.18s ease-out; }
+@keyframes spIn { from { transform: translateY(10px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+.sp-head {
+  padding: 14px 16px; display: flex; justify-content: space-between; align-items: flex-start;
+  background: linear-gradient(135deg, rgba(124,108,240,0.18), rgba(168,85,247,0.12));
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+}
+.sp-title { font-size: 15px; font-weight: 700; color: #fff; }
+.sp-sub { font-size: 11px; color: rgba(255,255,255,0.55); margin-top: 2px; }
+.sp-close {
+  background: rgba(255,255,255,0.08); border: none; color: #fff;
+  width: 28px; height: 28px; border-radius: 8px; cursor: pointer; font-size: 13px;
+}
+.sp-close:hover { background: rgba(255,255,255,0.15); }
+.sp-body { padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; overflow-y: auto; }
+.sp-label { font-size: 11px; font-weight: 600; color: rgba(255,255,255,0.6); text-transform: uppercase; letter-spacing: 0.04em; }
+.sp-input, .sp-textarea { font-size: 13px; }
+.sp-textarea { resize: vertical; min-height: 90px; font-family: inherit; }
+.sp-submit { margin-top: 4px; }
+.sp-link {
+  font-size: 12px; color: #a78bfa; text-decoration: none; text-align: center;
+  margin-top: 8px; padding: 8px; border-radius: 8px; transition: background 0.15s;
+}
+.sp-link:hover { background: rgba(124,108,240,0.1); }
+@media (max-width: 600px) {
+  .support-fab { right: 14px; bottom: 14px; width: 52px; height: 52px; font-size: 22px; }
+  .support-panel { right: 8px; left: 8px; bottom: 76px; width: auto; max-width: none; }
 }
 .assort-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
 .assort-col {
@@ -3625,10 +3695,90 @@ hr.soft { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 
   .assort-col { max-height: 50vh; }
 }
 
+/* === Бургер + drawer === */
+.burger-btn {
+  display: inline-flex; flex-direction: column; justify-content: center; gap: 4px;
+  width: 40px; height: 40px; border-radius: 10px; border: none;
+  background: rgba(255,255,255,0.08); cursor: pointer; padding: 0 10px;
+  transition: background 0.15s;
+}
+.burger-btn:hover { background: rgba(255,255,255,0.14); }
+.burger-btn span {
+  display: block; width: 20px; height: 2px; background: #fff;
+  border-radius: 2px; transition: transform 0.2s, opacity 0.2s;
+}
+.burger-btn.is-open span:nth-child(1) { transform: translateY(6px) rotate(45deg); }
+.burger-btn.is-open span:nth-child(2) { opacity: 0; }
+.burger-btn.is-open span:nth-child(3) { transform: translateY(-6px) rotate(-45deg); }
+
+.tabs-wrap { display: none !important; }
+
+.drawer-backdrop {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.6); backdrop-filter: blur(4px);
+  z-index: 8500; opacity: 0; pointer-events: none; transition: opacity 0.2s;
+}
+.drawer-backdrop.is-open { opacity: 1; pointer-events: auto; }
+.drawer {
+  position: fixed; top: 0; left: 0; bottom: 0; z-index: 8600;
+  width: 300px; max-width: 86vw; background: rgba(20, 18, 38, 0.98);
+  backdrop-filter: blur(14px); border-right: 1px solid rgba(255,255,255,0.08);
+  transform: translateX(-100%); transition: transform 0.25s ease-out;
+  display: flex; flex-direction: column; overflow: hidden;
+  box-shadow: 18px 0 50px rgba(0,0,0,0.5);
+}
+.drawer.is-open { transform: translateX(0); }
+.drawer-head {
+  padding: 16px 18px; display: flex; justify-content: space-between; align-items: flex-start;
+  background: linear-gradient(135deg, rgba(124,108,240,0.22), rgba(168,85,247,0.14));
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+}
+.drawer-title { font-size: 16px; font-weight: 700; }
+.drawer-org { font-size: 12px; color: rgba(255,255,255,0.55); margin-top: 2px; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.drawer-nav { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 4px; }
+.drawer-link {
+  display: flex; align-items: center; gap: 6px;
+  padding: 12px 14px; border-radius: 10px; cursor: pointer;
+  font-size: 14px; color: rgba(255,255,255,0.85); text-decoration: none;
+  background: rgba(255,255,255,0.02); border: 1px solid transparent;
+  transition: all 0.15s;
+}
+.drawer-link:hover { background: rgba(255,255,255,0.06); }
+.drawer-link.active {
+  background: linear-gradient(135deg, rgba(124,108,240,0.3), rgba(168,85,247,0.2));
+  border-color: rgba(124,108,240,0.45); color: #fff;
+}
+.drawer-badge {
+  margin-left: auto; background: #ef4444; color: white;
+  padding: 1px 7px; border-radius: 999px; font-size: 10px; font-weight: 700;
+}
+.drawer-footer {
+  padding: 12px; border-top: 1px solid rgba(255,255,255,0.08);
+  display: flex; flex-direction: column; gap: 6px;
+}
+.drawer-foot-link {
+  display: block; padding: 10px 12px; border-radius: 10px; text-decoration: none;
+  font-size: 13px; color: rgba(255,255,255,0.8); background: rgba(255,255,255,0.04);
+  text-align: center; transition: background 0.15s;
+}
+.drawer-foot-link:hover { background: rgba(255,255,255,0.08); }
+.drawer-foot-danger { color: #fca5a5; }
+.drawer-foot-danger:hover { background: rgba(239,68,68,0.16); }
+
 @media (max-width: 600px) {
-  .header { padding: 12px 14px; }
-  .header .brand .name { font-size: 15px; max-width: 180px; }
-  .btn { padding: 8px 10px; font-size: 12px; }
+  .header { padding: 12px 14px; gap: 8px; }
+  .header .brand .name { font-size: 14px; max-width: 130px; }
+  .header .brand .sub { font-size: 11px; }
+  .header .actions { gap: 6px; }
+  .header .actions .btn { padding: 8px 10px; font-size: 12px; }
+  .burger-btn { width: 38px; height: 38px; }
+  .container { padding: 12px; }
+  .card { padding: 14px; }
+  .card h2 { font-size: 16px; }
+  .modal { width: calc(100vw - 24px); max-height: calc(100vh - 60px); }
+  .assort-loc-list { flex-direction: column; }
+  .assort-col { max-height: 60vh; min-height: 240px; }
+  .assort-item { font-size: 14px; padding: 10px 12px; }
+  .assort-item .ai-btn { width: 32px; height: 32px; font-size: 16px; }
 }
 </style>
 </head>
@@ -3644,23 +3794,72 @@ hr.soft { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 
 {% endif %}
 
 <div class="header">
+  <button class="burger-btn" onclick="toggleDrawer()" aria-label="Меню" type="button">
+    <span></span><span></span><span></span>
+  </button>
   <div class="brand">
     <div class="name">👨‍💼 {{ org.name }}</div>
-    <div class="sub">Админ панель</div>
+    <div class="sub" id="header-sub">Админ панель</div>
   </div>
   <div class="actions">
     <a class="btn" href="/revision">📊 Ревизия</a>
-    <a class="btn" href="/support" style="background:rgba(124,108,240,0.18);border-color:rgba(124,108,240,0.4);color:#c4b5fd;">🎫 Поддержка</a>
-    <a class="btn btn-danger" href="/logout">Выйти</a>
+    <a class="btn btn-danger" href="/logout" onclick="return confirm('Выйти из аккаунта?');">Выйти</a>
   </div>
+</div>
+
+<!-- Drawer / Burger menu -->
+<div class="drawer-backdrop" id="drawer-backdrop" onclick="toggleDrawer()"></div>
+<aside class="drawer" id="drawer">
+  <div class="drawer-head">
+    <div>
+      <div class="drawer-title">Разделы</div>
+      <div class="drawer-org">{{ org.name }}</div>
+    </div>
+    <button class="sp-close" onclick="toggleDrawer()" aria-label="Закрыть">✕</button>
+  </div>
+  <nav class="drawer-nav">
+    <a class="drawer-link active" data-tab="tab-locations" onclick="switchTab('tab-locations', true)">📍 Локации и ассортимент</a>
+    <a class="drawer-link" data-tab="tab-categories" onclick="switchTab('tab-categories', true)">🗂 Категории</a>
+    <a class="drawer-link" data-tab="tab-products" onclick="switchTab('tab-products', true)">📦 Товары</a>
+    <a class="drawer-link" data-tab="tab-users" onclick="switchTab('tab-users', true)">👥 Пользователи</a>
+    <a class="drawer-link" data-tab="tab-norms" onclick="switchTab('tab-norms', true)">📏 Нормы</a>
+    <a class="drawer-link" data-tab="tab-import" onclick="switchTab('tab-import', true)">📥 Импорт</a>
+    <a class="drawer-link" data-tab="tab-requests" onclick="switchTab('tab-requests', true)">📨 Запросы{% if pending_revs %} <span class="drawer-badge">{{ pending_revs|length }}</span>{% endif %}</a>
+    <a class="drawer-link" data-tab="tab-history" onclick="switchTab('tab-history', true)">🗂 История</a>
+  </nav>
+  <div class="drawer-footer">
+    <a href="/revision" class="drawer-foot-link">📊 К ревизии</a>
+    <a href="/logout" class="drawer-foot-link drawer-foot-danger" onclick="return confirm('Выйти из аккаунта?');">↩ Выйти</a>
+  </div>
+</aside>
+
+<!-- Floating support widget -->
+<button class="support-fab" id="support-fab" onclick="toggleSupportPanel()" title="Поддержка" aria-label="Открыть чат поддержки">
+  💬
+</button>
+<div class="support-panel" id="support-panel">
+  <div class="sp-head">
+    <div>
+      <div class="sp-title">💬 Поддержка Revisi</div>
+      <div class="sp-sub">Ответим в течение рабочего дня</div>
+    </div>
+    <button class="sp-close" onclick="toggleSupportPanel()" aria-label="Закрыть">✕</button>
+  </div>
+  <form class="sp-body" id="support-quick-form" onsubmit="submitSupportQuick(event)">
+    <label class="sp-label">Тема</label>
+    <input class="input sp-input" name="subject" maxlength="200" placeholder="Кратко о проблеме" required>
+    <label class="sp-label">Сообщение</label>
+    <textarea class="input sp-textarea" name="body" rows="5" maxlength="3000" placeholder="Опишите, что произошло — мы поможем" required></textarea>
+    <button class="btn btn-primary sp-submit" type="submit">Отправить</button>
+    <a href="/support" class="sp-link">📋 Все мои обращения →</a>
+  </form>
 </div>
 
 <div class="tabs-wrap">
   <div class="tabs" id="tabs">
-    <div class="tab-pill active" data-tab="tab-locations" onclick="switchTab('tab-locations')">📍 Локации</div>
+    <div class="tab-pill active" data-tab="tab-locations" onclick="switchTab('tab-locations')">📍 Локации и ассортимент</div>
     <div class="tab-pill" data-tab="tab-categories" onclick="switchTab('tab-categories')">🗂 Категории</div>
     <div class="tab-pill" data-tab="tab-products" onclick="switchTab('tab-products')">📦 Товары</div>
-    <div class="tab-pill" data-tab="tab-assortment" onclick="switchTab('tab-assortment')">🍱 Ассортимент</div>
     <div class="tab-pill" data-tab="tab-users" onclick="switchTab('tab-users')">👥 Пользователи</div>
     <div class="tab-pill" data-tab="tab-norms" onclick="switchTab('tab-norms')">📏 Нормы</div>
     <div class="tab-pill" data-tab="tab-import" onclick="switchTab('tab-import')">📥 Импорт</div>
@@ -3688,31 +3887,75 @@ hr.soft { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 
   </div>
   {% endif %}
 
-  <!-- Tab: Локации -->
+  <!-- Tab: Локации + ассортимент -->
   <div class="tab-content active" id="tab-locations">
     <div class="card">
-      <h2>Локации <span class="count-pill">{{ locations|length }}</span></h2>
-      {% if locations %}
-        {% for loc in locations %}
-        <div class="row">
-          <div class="name">📍 {{ loc.name }}</div>
-          <form method="post" action="/admin/locations/delete/{{ loc.id }}" onsubmit="return confirm('Удалить локацию «{{ loc.name }}»? Нормы и ревизии на этой локации будут удалены.');">
-            <button class="btn btn-danger btn-small" type="submit">Удалить</button>
-          </form>
-        </div>
-        {% endfor %}
-      {% else %}
+      <h2>Локации и ассортимент <span class="count-pill">{{ locations|length }}</span></h2>
+      <div style="font-size:13px;color:rgba(255,255,255,0.6);margin-bottom:14px;">
+        Создайте локацию и сразу добавьте в неё товары. Товары, не привязанные ни к одной локации, не видны операторам и не попадают в отчёт.
+      </div>
+      {% if not locations %}
         <div class="empty">
           <div class="empty-icon">📍</div>
           <div class="empty-title">Пока нет локаций</div>
-          <div class="empty-hint">Добавьте локации (склад, кухня, бар) — без них нельзя начать ревизию.</div>
+          <div class="empty-hint">Добавьте первую локацию ниже — потом выберите её и заполните ассортиментом.</div>
         </div>
+        <hr class="soft">
+        <form method="post" action="/admin/locations/add" class="inline-form">
+          <input class="input" type="text" name="name" placeholder="Название локации (склад, кухня, бар…)" required maxlength="100">
+          <button class="btn btn-primary" type="submit">+ Добавить локацию</button>
+        </form>
+      {% else %}
+      <div class="assort-wrap">
+        <div class="assort-loc-list">
+          {% for loc in locations %}
+          <div class="assort-loc-item{% if loop.first %} active{% endif %}" data-loc-id="{{ loc.id }}" onclick="selectAssortLoc({{ loc.id }})">
+            <span class="assort-loc-name">📍 {{ loc.name }}</span>
+            <span class="assort-loc-actions">
+              <span class="assort-loc-count" id="assort-count-{{ loc.id }}">{{ assortment_map.get(loc.id, [])|length }}</span>
+              <form method="post" action="/admin/locations/delete/{{ loc.id }}" onsubmit="event.stopPropagation();return confirm('Удалить локацию «{{ loc.name }}»? Все её ревизии и привязки товаров будут удалены.');" style="display:inline;margin:0;">
+                <button class="btn btn-danger btn-small assort-loc-del" type="submit" title="Удалить локацию" onclick="event.stopPropagation()">×</button>
+              </form>
+            </span>
+          </div>
+          {% endfor %}
+          <form method="post" action="/admin/locations/add" class="inline-form assort-loc-add">
+            <input class="input" type="text" name="name" placeholder="Новая локация" required maxlength="100">
+            <button class="btn btn-primary btn-small" type="submit">+ Добавить</button>
+          </form>
+        </div>
+        {% if not products %}
+        <div class="assort-cols">
+          <div class="empty">
+            <div class="empty-icon">📦</div>
+            <div class="empty-title">Сначала добавьте товары</div>
+            <div class="empty-hint">Перейдите во вкладку «Товары» и создайте позиции, потом распределите их по локациям.</div>
+          </div>
+        </div>
+        {% else %}
+        <div class="assort-cols">
+          <div class="search-bar" style="margin-bottom:10px;">
+            <input class="input" id="assort-search" type="text" placeholder="🔎 Поиск по товарам" oninput="filterAssort()">
+          </div>
+          <div class="assort-grid">
+            <div class="assort-col">
+              <div class="assort-col-head">
+                <span>Не в ассортименте <span id="assort-avail-count" class="count-pill">0</span></span>
+              </div>
+              <div class="assort-list" id="assort-available"></div>
+            </div>
+            <div class="assort-col">
+              <div class="assort-col-head">
+                <span>В ассортименте <span id="assort-selected-count" class="count-pill">0</span></span>
+                <button class="btn btn-danger btn-small" id="assort-clear-btn" onclick="clearAssortLoc()" style="padding:4px 10px;font-size:11px;">Убрать все</button>
+              </div>
+              <div class="assort-list" id="assort-selected"></div>
+            </div>
+          </div>
+        </div>
+        {% endif %}
+      </div>
       {% endif %}
-      <hr class="soft">
-      <form method="post" action="/admin/locations/add" class="inline-form">
-        <input class="input" type="text" name="name" placeholder="Название локации" required maxlength="100">
-        <button class="btn btn-primary" type="submit">+ Добавить</button>
-      </form>
     </div>
   </div>
 
@@ -3799,58 +4042,6 @@ hr.soft { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 
           <div class="empty-title">Пока нет товаров</div>
           <div class="empty-hint">Нажмите «+ Добавить товар» или загрузите Excel во вкладке «Импорт».</div>
         </div>
-      {% endif %}
-    </div>
-  </div>
-
-  <!-- Tab: Ассортимент -->
-  <div class="tab-content" id="tab-assortment">
-    <div class="card">
-      <h2>Ассортимент локаций</h2>
-      <div style="font-size:13px;color:rgba(255,255,255,0.6);margin-bottom:14px;">
-        Выберите локацию слева — справа появятся два списка: «Не в ассортименте» и «В ассортименте». Товары, не добавленные ни в одну локацию, не видны операторам и не попадают в отчёт.
-      </div>
-      {% if not locations %}
-        <div class="empty">
-          <div class="empty-icon">📍</div>
-          <div class="empty-title">Сначала добавьте локации</div>
-          <div class="empty-hint">Без локаций ассортимент настраивать некуда.</div>
-        </div>
-      {% elif not products %}
-        <div class="empty">
-          <div class="empty-icon">📦</div>
-          <div class="empty-title">Сначала добавьте товары</div>
-          <div class="empty-hint">В разделе «Товары» создайте позиции, потом разнесите их по локациям.</div>
-        </div>
-      {% else %}
-      <div class="assort-wrap">
-        <div class="assort-loc-list">
-          {% for loc in locations %}
-          <div class="assort-loc-item{% if loop.first %} active{% endif %}" data-loc-id="{{ loc.id }}" onclick="selectAssortLoc({{ loc.id }})">
-            <span>📍 {{ loc.name }}</span>
-            <span class="assort-loc-count" id="assort-count-{{ loc.id }}">{{ assortment_map.get(loc.id, [])|length }}</span>
-          </div>
-          {% endfor %}
-        </div>
-        <div class="assort-cols">
-          <div class="search-bar" style="margin-bottom:10px;">
-            <input class="input" id="assort-search" type="text" placeholder="🔎 Поиск по товарам" oninput="filterAssort()">
-          </div>
-          <div class="assort-grid">
-            <div class="assort-col">
-              <div class="assort-col-head">Не в ассортименте <span id="assort-avail-count" class="count-pill">0</span></div>
-              <div class="assort-list" id="assort-available"></div>
-            </div>
-            <div class="assort-col">
-              <div class="assort-col-head">
-                <span>В ассортименте <span id="assort-selected-count" class="count-pill">0</span></span>
-                <button class="btn btn-danger btn-small" id="assort-clear-btn" onclick="clearAssortLoc()" style="padding:4px 10px;font-size:11px;">Убрать все</button>
-              </div>
-              <div class="assort-list" id="assort-selected"></div>
-            </div>
-          </div>
-        </div>
-      </div>
       {% endif %}
     </div>
   </div>
@@ -4114,17 +4305,40 @@ hr.soft { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 
 </div>
 
 <script>
-function switchTab(id) {
+const TAB_TITLES = {
+  'tab-locations': 'Локации и ассортимент',
+  'tab-categories': 'Категории',
+  'tab-products': 'Товары',
+  'tab-users': 'Пользователи',
+  'tab-norms': 'Нормы',
+  'tab-import': 'Импорт',
+  'tab-requests': 'Запросы',
+  'tab-history': 'История',
+};
+function switchTab(id, closeDrawer) {
   document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
   document.querySelectorAll('.tab-pill').forEach(el => el.classList.remove('active'));
+  document.querySelectorAll('.drawer-link').forEach(el => el.classList.remove('active'));
   const content = document.getElementById(id);
   if (content) content.classList.add('active');
   const pill = document.querySelector('.tab-pill[data-tab="' + id + '"]');
-  if (pill) {
-    pill.classList.add('active');
-    pill.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
-  }
+  if (pill) pill.classList.add('active');
+  const dlink = document.querySelector('.drawer-link[data-tab="' + id + '"]');
+  if (dlink) dlink.classList.add('active');
+  const sub = document.getElementById('header-sub');
+  if (sub && TAB_TITLES[id]) sub.textContent = TAB_TITLES[id];
   if (history.replaceState) history.replaceState(null, '', '#' + id);
+  if (closeDrawer) setTimeout(toggleDrawer, 80);
+}
+function toggleDrawer() {
+  const drawer = document.getElementById('drawer');
+  const backdrop = document.getElementById('drawer-backdrop');
+  const burger = document.querySelector('.burger-btn');
+  if (!drawer) return;
+  const open = drawer.classList.toggle('is-open');
+  backdrop.classList.toggle('is-open', open);
+  burger.classList.toggle('is-open', open);
+  document.body.style.overflow = open ? 'hidden' : '';
 }
 if (window.location.hash) {
   const id = window.location.hash.substring(1);
@@ -4219,6 +4433,45 @@ function escapeHtml(s) {
 }
 
 function filterAssort() { renderAssortLists(); }
+
+function toggleSupportPanel() {
+  const fab = document.getElementById('support-fab');
+  const panel = document.getElementById('support-panel');
+  if (!panel) return;
+  const open = panel.classList.toggle('is-open');
+  fab.classList.toggle('is-open', open);
+  fab.textContent = open ? '✕' : '💬';
+  if (open) setTimeout(() => panel.querySelector('input[name=subject]')?.focus(), 100);
+}
+
+async function submitSupportQuick(ev) {
+  ev.preventDefault();
+  const form = document.getElementById('support-quick-form');
+  const btn = form.querySelector('.sp-submit');
+  const origText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Отправка…';
+  try {
+    const res = await fetch('/support', {
+      method: 'POST',
+      body: new FormData(form),
+      headers: {'X-Requested-With': 'XMLHttpRequest'},
+    });
+    const data = await res.json();
+    if (data.ok) {
+      form.reset();
+      adminToast('✓ Обращение отправлено. Мы ответим в ближайшее время.', 'success');
+      toggleSupportPanel();
+    } else {
+      adminToast('✖ ' + (data.error || 'Не удалось отправить'), 'error');
+    }
+  } catch(e) {
+    adminToast('✖ ' + e, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = origText;
+  }
+}
 
 async function clearAssortLoc() {
   const locId = ASSORT_CURRENT_LOC;
@@ -4576,7 +4829,7 @@ header p{font-size:12px;color:rgba(255,255,255,0.4);margin-top:2px;}
   </div>
   <div class="hbtns">
     {% if is_admin %}<a href="/admin" class="hbtn hbtn-outline">⚙️ Админ</a>{% endif %}
-    <a href="/logout" class="hbtn hbtn-outline">Выйти</a>
+    <a href="/logout" class="hbtn hbtn-outline" onclick="return confirm('Выйти из аккаунта?');">Выйти</a>
   </div>
 </header>
 
