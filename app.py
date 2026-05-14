@@ -1988,6 +1988,97 @@ def support_view(ticket_id):
     return render_template_string(support_view_html, org=org, t=t, replies=replies)
 
 
+# ============== SUPPORT API (для встроенного чат-виджета) ==============
+@app.route('/support/api/tickets', methods=['GET'])
+@login_required_user
+def support_api_list():
+    org = _current_org()
+    if not org:
+        return jsonify({'ok': False, 'error': 'unauthorized'}), 401
+    tickets = SupportTicket.query.filter_by(org_id=org.id).order_by(
+        SupportTicket.updated_at.desc()
+    ).limit(20).all()
+    return jsonify({'ok': True, 'tickets': [
+        {
+            'id': t.id, 'subject': t.subject, 'status': t.status,
+            'updated_at': t.updated_at.strftime('%d.%m.%Y %H:%M') if t.updated_at else '',
+        } for t in tickets
+    ]})
+
+
+@app.route('/support/api/ticket/<int:ticket_id>', methods=['GET'])
+@login_required_user
+def support_api_view(ticket_id):
+    org = _current_org()
+    if not org:
+        return jsonify({'ok': False, 'error': 'unauthorized'}), 401
+    t = db.session.get(SupportTicket, ticket_id)
+    if not t or t.org_id != org.id:
+        return jsonify({'ok': False, 'error': 'not found'}), 404
+    replies = SupportTicketReply.query.filter_by(ticket_id=t.id).order_by(
+        SupportTicketReply.created_at
+    ).all()
+    messages = [{
+        'author_type': 'user',
+        'author_label': 'Вы',
+        'body': t.body,
+        'created_at': t.created_at.strftime('%d.%m.%Y %H:%M') if t.created_at else '',
+    }]
+    for r in replies:
+        messages.append({
+            'author_type': r.author_type,
+            'author_label': r.author_label or ('Вы' if r.author_type == 'user' else 'Поддержка'),
+            'body': r.body,
+            'created_at': r.created_at.strftime('%d.%m.%Y %H:%M') if r.created_at else '',
+        })
+    return jsonify({
+        'ok': True,
+        'ticket': {
+            'id': t.id, 'subject': t.subject, 'status': t.status,
+            'messages': messages,
+        },
+    })
+
+
+@app.route('/support/api/ticket/<int:ticket_id>/reply', methods=['POST'])
+@login_required_user
+def support_api_reply(ticket_id):
+    org = _current_org()
+    if not org:
+        return jsonify({'ok': False, 'error': 'unauthorized'}), 401
+    t = db.session.get(SupportTicket, ticket_id)
+    if not t or t.org_id != org.id:
+        return jsonify({'ok': False, 'error': 'not found'}), 404
+    if t.status == 'closed':
+        return jsonify({'ok': False, 'error': 'Тикет закрыт.'}), 400
+    body = (request.values.get('body') or '').strip()
+    if not body:
+        return jsonify({'ok': False, 'error': 'Введите сообщение.'}), 400
+    try:
+        user = current_user.user
+        r = SupportTicketReply(
+            ticket_id=t.id, author_type='user',
+            author_label=user.username if user else 'Клиент',
+            body=body,
+        )
+        db.session.add(r)
+        t.status = 'open'
+        t.updated_at = datetime.utcnow()
+        db.session.commit()
+        return jsonify({
+            'ok': True,
+            'message': {
+                'author_type': 'user',
+                'author_label': 'Вы',
+                'body': r.body,
+                'created_at': r.created_at.strftime('%d.%m.%Y %H:%M'),
+            },
+        })
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'ok': False, 'error': str(e)}), 400
+
+
 # ============== OWNER PANEL ==============
 
 def owner_required(fn):
@@ -3626,7 +3717,7 @@ hr.soft { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 
 .support-fab.is-open { background: linear-gradient(135deg, #ef4444, #f97316); }
 .support-panel {
   position: fixed; right: 22px; bottom: 92px; z-index: 9000;
-  width: 360px; max-width: calc(100vw - 32px); max-height: calc(100vh - 120px);
+  width: 380px; max-width: calc(100vw - 32px); height: 560px; max-height: calc(100vh - 120px);
   background: rgba(20, 18, 38, 0.96); backdrop-filter: blur(14px);
   border: 1px solid rgba(255,255,255,0.1); border-radius: 18px;
   box-shadow: 0 24px 60px rgba(0,0,0,0.55);
@@ -3656,6 +3747,72 @@ hr.soft { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 
   margin-top: 8px; padding: 8px; border-radius: 8px; transition: background 0.15s;
 }
 .sp-link:hover { background: rgba(124,108,240,0.1); }
+.sp-back {
+  background: rgba(255,255,255,0.08); border: none; color: #fff;
+  width: 28px; height: 28px; border-radius: 8px; cursor: pointer; font-size: 14px;
+  margin-right: 8px; flex-shrink: 0;
+}
+.sp-back:hover { background: rgba(255,255,255,0.15); }
+.sp-view { display: none; flex-direction: column; flex: 1; min-height: 0; }
+.sp-view.active { display: flex; }
+.sp-list { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 6px; }
+.sp-empty { text-align: center; padding: 24px 12px; color: rgba(255,255,255,0.45); font-size: 13px; }
+.sp-ticket {
+  padding: 12px; border-radius: 12px; cursor: pointer;
+  background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.06);
+  transition: all 0.15s;
+}
+.sp-ticket:hover { background: rgba(124,108,240,0.12); border-color: rgba(124,108,240,0.3); }
+.sp-ticket-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 4px; }
+.sp-ticket-subj { font-weight: 600; font-size: 13px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sp-status {
+  font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 999px;
+  text-transform: uppercase; letter-spacing: 0.04em; flex-shrink: 0;
+}
+.sp-status-open { background: rgba(245,158,11,0.2); color: #fbbf24; }
+.sp-status-answered { background: rgba(34,197,94,0.2); color: #86efac; }
+.sp-status-closed { background: rgba(148,163,184,0.2); color: #cbd5e1; }
+.sp-ticket-date { font-size: 11px; color: rgba(255,255,255,0.45); }
+.sp-new-btn { margin: 12px; flex-shrink: 0; }
+.sp-messages {
+  flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 10px;
+}
+.sp-msg { display: flex; flex-direction: column; max-width: 85%; }
+.sp-msg-user { align-self: flex-end; }
+.sp-msg-owner { align-self: flex-start; }
+.sp-msg-bubble {
+  padding: 9px 12px; border-radius: 14px; font-size: 13px; line-height: 1.4;
+  word-wrap: break-word; white-space: pre-wrap;
+}
+.sp-msg-user .sp-msg-bubble {
+  background: linear-gradient(135deg, #7c6cf0, #a855f7); color: #fff;
+  border-bottom-right-radius: 4px;
+}
+.sp-msg-owner .sp-msg-bubble {
+  background: rgba(255,255,255,0.07); color: #fff;
+  border: 1px solid rgba(255,255,255,0.08); border-bottom-left-radius: 4px;
+}
+.sp-msg-meta {
+  font-size: 10px; color: rgba(255,255,255,0.4); margin-top: 3px; padding: 0 4px;
+}
+.sp-msg-user .sp-msg-meta { text-align: right; }
+.sp-reply-form {
+  display: flex; gap: 8px; padding: 10px 12px;
+  border-top: 1px solid rgba(255,255,255,0.08); background: rgba(0,0,0,0.2);
+}
+.sp-reply-input {
+  flex: 1; resize: none; min-height: 38px; max-height: 100px; padding: 8px 12px !important;
+  font-size: 13px !important;
+}
+.sp-reply-btn {
+  width: 40px; height: 40px; padding: 0 !important; font-size: 16px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+}
+.sp-closed-note {
+  padding: 10px; text-align: center; font-size: 11px;
+  color: rgba(255,255,255,0.5); background: rgba(0,0,0,0.2);
+  border-top: 1px solid rgba(255,255,255,0.08);
+}
 @media (max-width: 600px) {
   .support-fab { right: 14px; bottom: 14px; width: 52px; height: 52px; font-size: 22px; }
   .support-panel { right: 8px; left: 8px; bottom: 76px; width: auto; max-width: none; }
@@ -3711,7 +3868,12 @@ hr.soft { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 
 .burger-btn.is-open span:nth-child(2) { opacity: 0; }
 .burger-btn.is-open span:nth-child(3) { transform: translateY(-6px) rotate(-45deg); }
 
-.tabs-wrap { display: none !important; }
+/* На десктопе показываем вкладки, бургер прячем; на мобиле — наоборот */
+.burger-btn { display: none; }
+@media (max-width: 800px) {
+  .burger-btn { display: inline-flex; }
+  .tabs-wrap { display: none !important; }
+}
 
 .drawer-backdrop {
   position: fixed; inset: 0; background: rgba(0,0,0,0.6); backdrop-filter: blur(4px);
@@ -3839,20 +4001,41 @@ hr.soft { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 
 </button>
 <div class="support-panel" id="support-panel">
   <div class="sp-head">
-    <div>
-      <div class="sp-title">💬 Поддержка Revisi</div>
-      <div class="sp-sub">Ответим в течение рабочего дня</div>
+    <button class="sp-back" id="sp-back" onclick="supportShowList()" style="display:none;" aria-label="Назад">←</button>
+    <div style="flex:1;min-width:0;">
+      <div class="sp-title" id="sp-title">💬 Поддержка Revisi</div>
+      <div class="sp-sub" id="sp-sub">Ответим в течение рабочего дня</div>
     </div>
     <button class="sp-close" onclick="toggleSupportPanel()" aria-label="Закрыть">✕</button>
   </div>
-  <form class="sp-body" id="support-quick-form" onsubmit="submitSupportQuick(event)">
-    <label class="sp-label">Тема</label>
-    <input class="input sp-input" name="subject" maxlength="200" placeholder="Кратко о проблеме" required>
-    <label class="sp-label">Сообщение</label>
-    <textarea class="input sp-textarea" name="body" rows="5" maxlength="3000" placeholder="Опишите, что произошло — мы поможем" required></textarea>
-    <button class="btn btn-primary sp-submit" type="submit">Отправить</button>
-    <a href="/support" class="sp-link">📋 Все мои обращения →</a>
-  </form>
+
+  <!-- View 1: Tickets list -->
+  <div class="sp-view sp-view-list active" id="sp-view-list">
+    <div class="sp-list" id="sp-tickets-list">
+      <div class="sp-empty">Загрузка…</div>
+    </div>
+    <button class="btn btn-primary sp-new-btn" onclick="supportShowNew()">+ Новое обращение</button>
+  </div>
+
+  <!-- View 2: Single ticket chat -->
+  <div class="sp-view" id="sp-view-chat">
+    <div class="sp-messages" id="sp-messages"></div>
+    <form class="sp-reply-form" id="sp-reply-form" onsubmit="supportSendReply(event)">
+      <textarea class="input sp-reply-input" name="body" rows="2" maxlength="3000" placeholder="Ваш ответ…" required></textarea>
+      <button class="btn btn-primary sp-reply-btn" type="submit" aria-label="Отправить">➤</button>
+    </form>
+  </div>
+
+  <!-- View 3: New ticket form -->
+  <div class="sp-view" id="sp-view-new">
+    <form class="sp-body" id="support-quick-form" onsubmit="submitSupportQuick(event)">
+      <label class="sp-label">Тема</label>
+      <input class="input sp-input" name="subject" maxlength="200" placeholder="Кратко о проблеме" required>
+      <label class="sp-label">Сообщение</label>
+      <textarea class="input sp-textarea" name="body" rows="5" maxlength="3000" placeholder="Опишите, что произошло — мы поможем" required></textarea>
+      <button class="btn btn-primary sp-submit" type="submit">Отправить</button>
+    </form>
+  </div>
 </div>
 
 <div class="tabs-wrap">
@@ -4434,6 +4617,8 @@ function escapeHtml(s) {
 
 function filterAssort() { renderAssortLists(); }
 
+let SP_CURRENT_TICKET = null;
+
 function toggleSupportPanel() {
   const fab = document.getElementById('support-fab');
   const panel = document.getElementById('support-panel');
@@ -4441,7 +4626,152 @@ function toggleSupportPanel() {
   const open = panel.classList.toggle('is-open');
   fab.classList.toggle('is-open', open);
   fab.textContent = open ? '✕' : '💬';
-  if (open) setTimeout(() => panel.querySelector('input[name=subject]')?.focus(), 100);
+  if (open) {
+    supportShowList();
+    supportLoadList();
+  }
+}
+
+function supportSetView(name) {
+  document.querySelectorAll('.sp-view').forEach(el => el.classList.remove('active'));
+  const v = document.getElementById('sp-view-' + name);
+  if (v) v.classList.add('active');
+  const back = document.getElementById('sp-back');
+  if (back) back.style.display = (name === 'list') ? 'none' : '';
+}
+
+function supportShowList() {
+  SP_CURRENT_TICKET = null;
+  supportSetView('list');
+  document.getElementById('sp-title').textContent = '💬 Поддержка Revisi';
+  document.getElementById('sp-sub').textContent = 'Ответим в течение рабочего дня';
+}
+
+function supportShowNew() {
+  supportSetView('new');
+  document.getElementById('sp-title').textContent = '💬 Новое обращение';
+  document.getElementById('sp-sub').textContent = 'Опишите проблему — мы ответим';
+  setTimeout(() => document.querySelector('#support-quick-form input[name=subject]')?.focus(), 100);
+}
+
+function supportEscape(s) {
+  return String(s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+async function supportLoadList() {
+  const listEl = document.getElementById('sp-tickets-list');
+  listEl.innerHTML = '<div class="sp-empty">Загрузка…</div>';
+  try {
+    const res = await fetch('/support/api/tickets', { headers: {'X-Requested-With': 'XMLHttpRequest'} });
+    const data = await res.json();
+    if (!data.ok) {
+      listEl.innerHTML = '<div class="sp-empty">Не удалось загрузить обращения.</div>';
+      return;
+    }
+    if (!data.tickets.length) {
+      listEl.innerHTML = '<div class="sp-empty">Пока обращений нет.<br>Нажмите «+ Новое обращение», чтобы написать в поддержку.</div>';
+      return;
+    }
+    const statusLabel = { open: 'открыт', answered: 'отвечен', closed: 'закрыт' };
+    listEl.innerHTML = data.tickets.map(t => `
+      <div class="sp-ticket" onclick="supportOpenTicket(${t.id})">
+        <div class="sp-ticket-head">
+          <span class="sp-ticket-subj">${supportEscape(t.subject)}</span>
+          <span class="sp-status sp-status-${t.status}">${statusLabel[t.status] || t.status}</span>
+        </div>
+        <div class="sp-ticket-date">${supportEscape(t.updated_at)}</div>
+      </div>
+    `).join('');
+  } catch(e) {
+    listEl.innerHTML = '<div class="sp-empty">Ошибка: ' + supportEscape(e) + '</div>';
+  }
+}
+
+async function supportOpenTicket(ticketId) {
+  SP_CURRENT_TICKET = ticketId;
+  supportSetView('chat');
+  const msgEl = document.getElementById('sp-messages');
+  msgEl.innerHTML = '<div class="sp-empty">Загрузка переписки…</div>';
+  document.getElementById('sp-title').textContent = '💬 Обращение #' + ticketId;
+  document.getElementById('sp-sub').textContent = 'Загрузка…';
+  try {
+    const res = await fetch('/support/api/ticket/' + ticketId, { headers: {'X-Requested-With': 'XMLHttpRequest'} });
+    const data = await res.json();
+    if (!data.ok) {
+      msgEl.innerHTML = '<div class="sp-empty">Не удалось загрузить тикет.</div>';
+      return;
+    }
+    const t = data.ticket;
+    document.getElementById('sp-title').textContent = '💬 ' + (t.subject.length > 28 ? t.subject.slice(0, 28) + '…' : t.subject);
+    document.getElementById('sp-sub').textContent = 'Статус: ' + ({open:'открыт',answered:'отвечен',closed:'закрыт'}[t.status] || t.status);
+    renderSupportMessages(t.messages);
+    // Hide reply form if closed
+    const form = document.getElementById('sp-reply-form');
+    const existingNote = document.getElementById('sp-closed-note');
+    if (existingNote) existingNote.remove();
+    if (t.status === 'closed') {
+      form.style.display = 'none';
+      const note = document.createElement('div');
+      note.id = 'sp-closed-note';
+      note.className = 'sp-closed-note';
+      note.textContent = 'Тикет закрыт — нельзя ответить. Создайте новое обращение, если нужно.';
+      form.parentNode.appendChild(note);
+    } else {
+      form.style.display = '';
+    }
+  } catch(e) {
+    msgEl.innerHTML = '<div class="sp-empty">Ошибка: ' + supportEscape(e) + '</div>';
+  }
+}
+
+function renderSupportMessages(messages) {
+  const msgEl = document.getElementById('sp-messages');
+  msgEl.innerHTML = messages.map(m => `
+    <div class="sp-msg sp-msg-${m.author_type === 'user' ? 'user' : 'owner'}">
+      <div class="sp-msg-bubble">${supportEscape(m.body)}</div>
+      <div class="sp-msg-meta">${supportEscape(m.author_label)} · ${supportEscape(m.created_at)}</div>
+    </div>
+  `).join('');
+  msgEl.scrollTop = msgEl.scrollHeight;
+}
+
+async function supportSendReply(ev) {
+  ev.preventDefault();
+  if (!SP_CURRENT_TICKET) return;
+  const form = document.getElementById('sp-reply-form');
+  const input = form.querySelector('textarea[name=body]');
+  const body = input.value.trim();
+  if (!body) return;
+  const btn = form.querySelector('.sp-reply-btn');
+  btn.disabled = true;
+  try {
+    const fd = new FormData();
+    fd.append('body', body);
+    const res = await fetch('/support/api/ticket/' + SP_CURRENT_TICKET + '/reply', {
+      method: 'POST', body: fd,
+      headers: {'X-Requested-With': 'XMLHttpRequest'},
+    });
+    const data = await res.json();
+    if (data.ok) {
+      input.value = '';
+      // Append message
+      const msgEl = document.getElementById('sp-messages');
+      const m = data.message;
+      msgEl.insertAdjacentHTML('beforeend', `
+        <div class="sp-msg sp-msg-user">
+          <div class="sp-msg-bubble">${supportEscape(m.body)}</div>
+          <div class="sp-msg-meta">${supportEscape(m.author_label)} · ${supportEscape(m.created_at)}</div>
+        </div>
+      `);
+      msgEl.scrollTop = msgEl.scrollHeight;
+    } else {
+      adminToast('✖ ' + (data.error || 'Не удалось отправить'), 'error');
+    }
+  } catch(e) {
+    adminToast('✖ ' + e, 'error');
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 async function submitSupportQuick(ev) {
@@ -4460,8 +4790,10 @@ async function submitSupportQuick(ev) {
     const data = await res.json();
     if (data.ok) {
       form.reset();
-      adminToast('✓ Обращение отправлено. Мы ответим в ближайшее время.', 'success');
-      toggleSupportPanel();
+      adminToast('✓ Обращение отправлено', 'success');
+      // Jump straight into chat for the new ticket
+      if (data.ticket_id) supportOpenTicket(data.ticket_id);
+      else { supportShowList(); supportLoadList(); }
     } else {
       adminToast('✖ ' + (data.error || 'Не удалось отправить'), 'error');
     }
