@@ -3847,7 +3847,6 @@ hr.soft { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 
 .assort-empty { text-align: center; padding: 24px 12px; color: rgba(255,255,255,0.4); font-size: 12px; }
 @media (max-width: 800px) {
   .assort-wrap { grid-template-columns: 1fr; }
-  .assort-loc-list { flex-direction: row; flex-wrap: wrap; }
   .assort-grid { grid-template-columns: 1fr; }
   .assort-col { max-height: 50vh; }
 }
@@ -3926,21 +3925,24 @@ hr.soft { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 
 .drawer-foot-danger { color: #fca5a5; }
 .drawer-foot-danger:hover { background: rgba(239,68,68,0.16); }
 
+@media (max-width: 800px) {
+  /* На мобиле все действия живут в drawer-меню — шапку чистим, чтобы не толкаться */
+  .header .actions { display: none; }
+}
 @media (max-width: 600px) {
   .header { padding: 12px 14px; gap: 8px; }
-  .header .brand .name { font-size: 14px; max-width: 130px; }
+  .header .brand .name { font-size: 15px; max-width: none; }
   .header .brand .sub { font-size: 11px; }
-  .header .actions { gap: 6px; }
-  .header .actions .btn { padding: 8px 10px; font-size: 12px; }
   .burger-btn { width: 38px; height: 38px; }
   .container { padding: 12px; }
   .card { padding: 14px; }
   .card h2 { font-size: 16px; }
   .modal { width: calc(100vw - 24px); max-height: calc(100vh - 60px); }
-  .assort-loc-list { flex-direction: column; }
   .assort-col { max-height: 60vh; min-height: 240px; }
   .assort-item { font-size: 14px; padding: 10px 12px; }
   .assort-item .ai-btn { width: 32px; height: 32px; font-size: 16px; }
+  .assort-loc-add { flex-wrap: wrap; }
+  .assort-loc-add .btn { flex-basis: 100%; }
 }
 </style>
 </head>
