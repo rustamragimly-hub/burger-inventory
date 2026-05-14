@@ -3400,6 +3400,8 @@ admin_html = '''<!DOCTYPE html>
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
 <style>
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; margin: 0; padding: 0; }
+* { box-sizing: border-box; }
+html, body { max-width: 100%; overflow-x: hidden; }
 body {
   font-family: 'Outfit', sans-serif;
   background: linear-gradient(135deg, #13111C 0%, #1d1635 50%, #231b50 100%);
@@ -3407,7 +3409,9 @@ body {
   min-height: 100vh;
   color: white;
   padding-bottom: 60px;
+  margin: 0;
 }
+img, svg, video, canvas { max-width: 100%; height: auto; }
 .blob { position: fixed; border-radius: 50%; filter: blur(80px); opacity: 0.25; pointer-events: none; z-index: 0; }
 .blob-1 { width: 400px; height: 400px; background: radial-gradient(circle, #7c6cf0, #a855f7); top: -100px; left: -100px; }
 .blob-2 { width: 350px; height: 350px; background: radial-gradient(circle, #a855f7, #6d28d9); bottom: -80px; right: -80px; }
@@ -3483,7 +3487,7 @@ body {
   border-color: transparent;
   box-shadow: 0 4px 12px rgba(124,108,240,0.35);
 }
-.container { max-width: 980px; margin: 20px auto; padding: 0 16px; position: relative; z-index: 1; }
+.container { max-width: 980px; width: 100%; margin: 20px auto; padding: 0 16px; position: relative; z-index: 1; }
 .card {
   background: rgba(255,255,255,0.07);
   backdrop-filter: blur(20px);
@@ -3672,8 +3676,9 @@ select.input option { background: #1d1635; color: white; }
 hr.soft { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 0; }
 
 /* === Ассортимент локаций === */
-.assort-wrap { display: grid; grid-template-columns: 260px 1fr; gap: 16px; align-items: start; }
-.assort-loc-list { display: flex; flex-direction: column; gap: 6px; }
+.assort-wrap { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 16px; align-items: start; }
+.assort-cols { min-width: 0; }
+.assort-loc-list { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .assort-loc-item {
   display: flex; justify-content: space-between; align-items: center;
   padding: 10px 12px; border-radius: 10px; cursor: pointer;
@@ -4525,10 +4530,14 @@ function toggleDrawer() {
   burger.classList.toggle('is-open', open);
   document.body.style.overflow = open ? 'hidden' : '';
 }
-if (window.location.hash) {
-  const id = window.location.hash.substring(1);
-  if (document.getElementById(id)) switchTab(id);
-}
+(function initActiveTab() {
+  let id = 'tab-locations';
+  if (window.location.hash) {
+    const h = window.location.hash.substring(1);
+    if (document.getElementById(h)) id = h;
+  }
+  switchTab(id);
+})();
 
 function openModal(id) { document.getElementById(id).classList.add('open'); }
 function closeModal(id) { document.getElementById(id).classList.remove('open'); }
