@@ -3822,18 +3822,18 @@ hr.soft { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 
   .support-fab { right: 14px; bottom: 14px; width: 52px; height: 52px; font-size: 22px; }
   .support-panel { right: 8px; left: 8px; bottom: 76px; width: auto; max-width: none; }
 }
-.assort-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.assort-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; }
 .assort-col {
   background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06);
   border-radius: 12px; padding: 10px; min-height: 320px; max-height: 60vh;
-  display: flex; flex-direction: column;
+  display: flex; flex-direction: column; min-width: 0;
 }
 .assort-col-head {
-  display: flex; justify-content: space-between; align-items: center;
+  display: flex; justify-content: space-between; align-items: center; gap: 8px;
   font-size: 13px; font-weight: 600; color: rgba(255,255,255,0.85);
-  margin-bottom: 8px; padding: 0 4px;
+  margin-bottom: 8px; padding: 0 4px; flex-wrap: wrap;
 }
-.assort-list { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; }
+.assort-list { flex: 1; min-width: 0; overflow-y: auto; overflow-x: hidden; display: flex; flex-direction: column; gap: 4px; }
 .assort-item {
   display: flex; justify-content: space-between; align-items: center;
   padding: 8px 10px; border-radius: 8px; font-size: 13px;
@@ -3852,7 +3852,7 @@ hr.soft { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 
 .assort-empty { text-align: center; padding: 24px 12px; color: rgba(255,255,255,0.4); font-size: 12px; }
 @media (max-width: 800px) {
   .assort-wrap { grid-template-columns: 1fr; }
-  .assort-grid { grid-template-columns: 1fr; }
+  .assort-grid { grid-template-columns: minmax(0, 1fr); }
   .assort-col { max-height: 50vh; }
 }
 
