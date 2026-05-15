@@ -7355,6 +7355,35 @@ with app.app_context():
     except Exception as _e:
         print(f'⚠️  Миграция колонок organizations: {_e}')
 
+    # Чистка: убираем сокращение " в асс" / " в ассорт" / " в ассортименте"
+    # из названий товаров. Звучит двусмысленно, и пользователь явно попросил
+    # его убрать. Идемпотентно — повторные запуски ничего не делают.
+    try:
+        import re as _re_clean
+        # Требуем, чтобы после "асс[.орт.]" шёл разделитель — иначе слова
+        # "ассорти", "ассистент" и т.п. не пострадают.
+        _pat = _re_clean.compile(
+            r'\s*\(?\s*в\s+асс(?:\.|орт\.?|ортименте)?(?=\s|[,.)\]]|$)\s*\)?',
+            _re_clean.IGNORECASE,
+        )
+        _cleaned = 0
+        for _p in Product.query.all():
+            if not _p.name:
+                continue
+            _new = _pat.sub(' ', _p.name)
+            _new = _re_clean.sub(r'\s+', ' ', _new).strip()
+            _new = _re_clean.sub(r'\s+([,.)\]])', r'\1', _new)
+            _new = _re_clean.sub(r'\(\s+', '(', _new)
+            if _new and _new != _p.name:
+                _p.name = _new
+                _cleaned += 1
+        if _cleaned:
+            db.session.commit()
+            print(f'🧹 Очищено названий товаров от "в асс": {_cleaned}')
+    except Exception as _e:
+        db.session.rollback()
+        print(f'⚠️  Чистка "в асс": {_e}')
+
     # Миграция: переименовываем admin-пользователя Мобара в TimurSaipov
     try:
         _mobar_email = os.environ.get('MOBAR_EMAIL')
