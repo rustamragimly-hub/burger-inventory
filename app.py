@@ -856,7 +856,7 @@ def admin_delete_category(cat_id):
 @admin_required
 def admin_add_product():
     org = _current_org()
-    name = (request.form.get('name') or '').strip()
+    name = _sanitize_product_name((request.form.get('name') or '').strip())
     category_id = request.form.get('category_id') or ''
     new_category = (request.form.get('new_category') or '').strip()
     unit = (request.form.get('unit') or 'шт').strip() or 'шт'
@@ -939,7 +939,7 @@ def admin_edit_product(pid):
             return jsonify({'ok': False, 'error': 'Товар не найден.'}), 404
         flash('Товар не найден.', 'error')
         return redirect('/admin#tab-products')
-    name = (request.form.get('name') or '').strip()
+    name = _sanitize_product_name((request.form.get('name') or '').strip())
     category_id = request.form.get('category_id') or ''
     unit = (request.form.get('unit') or 'шт').strip() or 'шт'
     code = (request.form.get('code') or '').strip()
@@ -1158,6 +1158,25 @@ def admin_import_template():
     )
 
 
+# Сокращение "в асс" / "в ассорт." / "в ассортименте" — частая ошибка в импортах
+# из iiko/1С: на слух читается двусмысленно. Чистим прямо во входных данных,
+# чтобы такие имена никогда не попадали в БД, даже на короткое время до старта.
+_IMPORT_ASS_RE = re.compile(
+    r'\s*\(?\s*в\s+асс(?:\.|орт\.?|ортименте)?(?=\s|[,.)\]]|$)\s*\)?',
+    re.IGNORECASE,
+)
+
+
+def _sanitize_product_name(name):
+    if not name:
+        return name
+    new = _IMPORT_ASS_RE.sub(' ', name)
+    new = re.sub(r'\s+', ' ', new).strip()
+    new = re.sub(r'\s+([,.)\]])', r'\1', new)
+    new = re.sub(r'\(\s+', '(', new)
+    return new
+
+
 def _import_rows(org_id, rows):
     """rows — iterable of dict-like {Категория, Название, Код, Ед. изм.}."""
     added = 0
@@ -1171,7 +1190,7 @@ def _import_rows(org_id, rows):
     for i, row in enumerate(rows, start=2):
         try:
             cat_name = (row.get('Категория') or '').strip()
-            name = (row.get('Название') or '').strip()
+            name = _sanitize_product_name((row.get('Название') or '').strip())
             code = (row.get('Код') or '').strip()
             unit = (row.get('Ед. изм.') or 'шт').strip() or 'шт'
             if not name:
