@@ -1921,6 +1921,21 @@ def admin_revision_confirm(rev_id):
         rev.status = 'completed'
         if not rev.finished_at:
             rev.finished_at = datetime.utcnow()
+        # После подтверждения локация должна стать «чистой» — никаких параллельных
+        # открытых ревизий, накопившихся из-за гонок. Любые другие in_progress /
+        # pending ревизии этой локации отменяем и удаляем их позиции (они были
+        # дублями той ревизии, что мы только что подтвердили).
+        if rev.location_id:
+            siblings = Revision.query.filter(
+                Revision.org_id == org.id,
+                Revision.location_id == rev.location_id,
+                Revision.status.in_(['in_progress', 'pending']),
+                Revision.id != rev.id,
+            ).all()
+            for _sib in siblings:
+                RevisionItem.query.filter_by(revision_id=_sib.id).delete(synchronize_session=False)
+                _sib.status = 'cancelled'
+                _sib.finished_at = datetime.utcnow()
         db.session.commit()
         loc = db.session.get(Location, rev.location_id) if rev.location_id else None
         loc_name = (loc.name if loc else 'location').replace(' ', '_')
@@ -7578,6 +7593,45 @@ with app.app_context():
     except Exception as _e:
         db.session.rollback()
         print(f'⚠️  Привязка шаблона Прайда: {_e}')
+
+    # One-shot чистка orphan-ревизий: если на одной локации зависло несколько
+    # in_progress / pending ревизий (наследие гонки до фикса в
+    # _get_or_create_active_revision), оставляем самую свежую (или ту, что
+    # сейчас в pending — она важнее), остальные отменяем и чистим их позиции.
+    # Идемпотентно: после первого прохода дубликатов не остаётся.
+    try:
+        from sqlalchemy import func as _sa_func2
+        _dup_pairs = (
+            db.session.query(Revision.org_id, Revision.location_id)
+            .filter(Revision.status.in_(['in_progress', 'pending']))
+            .filter(Revision.location_id.isnot(None))
+            .group_by(Revision.org_id, Revision.location_id)
+            .having(_sa_func2.count(Revision.id) > 1)
+            .all()
+        )
+        _orphans_cleared = 0
+        for _org_id, _loc_id in _dup_pairs:
+            _candidates = Revision.query.filter(
+                Revision.org_id == _org_id,
+                Revision.location_id == _loc_id,
+                Revision.status.in_(['in_progress', 'pending']),
+            ).order_by(
+                # pending > in_progress (по приоритету), потом по дате
+                (Revision.status == 'pending').desc(),
+                Revision.created_at.desc(),
+            ).all()
+            _keep = _candidates[0]
+            for _r in _candidates[1:]:
+                RevisionItem.query.filter_by(revision_id=_r.id).delete(synchronize_session=False)
+                _r.status = 'cancelled'
+                _r.finished_at = datetime.utcnow()
+                _orphans_cleared += 1
+        if _orphans_cleared:
+            db.session.commit()
+            print(f'🧹 Отменено orphan-ревизий: {_orphans_cleared}')
+    except Exception as _e:
+        db.session.rollback()
+        print(f'⚠️  Чистка orphan-ревизий: {_e}')
 
     # Чистка: убираем сокращение " в асс" / " в ассорт" / " в ассортименте"
     # из названий товаров. Звучит двусмысленно, и пользователь явно попросил
