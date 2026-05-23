@@ -1717,11 +1717,16 @@ def _build_revision_xlsx(rev):
 
     # Если у компании есть кастомный Excel-шаблон — заполняем его
     if org and org.excel_template:
-        # Агрегируем: код товара → суммарное количество (только товары из ассортимента)
-        aggregated = {}
+        # Два индекса: по коду и по имени (lower). По коду — основной матч;
+        # по имени — фолбэк для импортных позиций без кода (полуфабрикаты).
+        agg_by_code = {}
+        agg_by_name = {}
         for pid, p in products.items():
+            qty = qty_by_pid.get(pid, 0)
             if p.code:
-                aggregated[p.code] = qty_by_pid.get(pid, 0)
+                agg_by_code[p.code] = qty
+            if p.name:
+                agg_by_name[p.name.strip().lower()] = qty
 
         wb = openpyxl.load_workbook(BytesIO(org.excel_template))
         ws = wb.active
@@ -1735,16 +1740,30 @@ def _build_revision_xlsx(rev):
                 if isinstance(val, str):
                     if 'Дата печати' in val:
                         cell.value = f'Дата печати: {today_str}'
-                    elif 'НА ДАТУ:' in val.upper():
-                        cell.value = f'НА ДАТУ: {today_str}'
+                    elif 'НА ДАТУ:' in val.upper() or val.startswith('На дату'):
+                        cell.value = f'На дату: {today_str}'
 
-            # Заполняем остаток по коду из колонки B (2). Нулевые остатки тоже выводим —
-            # они отражают, что товар присутствовал в ревизии, но фактически пуст.
+            # Сначала пытаемся сопоставить по коду из колонки B (2). Если кода нет
+            # или он не находится — фолбэк на имя товара из колонки C (3). Это нужно
+            # для полуфабрикатов и любых других позиций, которые в шаблоне без кода.
+            qty = None
             code_cell = ws.cell(row=row, column=2).value
             if code_cell is not None:
                 code_str = str(code_cell).strip()
-                if code_str in aggregated:
-                    ws.cell(row=row, column=7, value=aggregated[code_str])
+                if code_str in agg_by_code:
+                    qty = agg_by_code[code_str]
+            if qty is None:
+                name_cell = ws.cell(row=row, column=3).value
+                if name_cell is not None:
+                    name_str = str(name_cell).strip().lower()
+                    if name_str in agg_by_name:
+                        qty = agg_by_name[name_str]
+            if qty is not None:
+                try:
+                    ws.cell(row=row, column=7, value=qty)
+                except AttributeError:
+                    # Объединённая ячейка в этом месте — пропускаем тихо
+                    pass
 
         buf = BytesIO()
         wb.save(buf)
@@ -2697,6 +2716,8 @@ def owner_org_detail(org_id):
         ends_str = '—'
 
     features = org.features or {}
+    has_template = bool(org.excel_template)
+    template_size = len(org.excel_template) if org.excel_template else 0
     return render_template_string(
         owner_org_detail_html,
         owner_email=current_user.username,
@@ -2707,6 +2728,7 @@ def owner_org_detail(org_id):
         revisions_count=revisions_count,
         items_7d=items_7d, spark=spark,
         features=features,
+        has_template=has_template, template_size=template_size,
     )
 
 
@@ -2780,6 +2802,53 @@ def owner_impersonate(org_id):
     login_user(AuthUser(admin_user, 'user'), remember=True)
     flash(f'Вы вошли как admin компании «{org.name}». Нажмите «Вернуться» в шапке, чтобы выйти.', 'success')
     return redirect('/admin')
+
+
+@app.route('/owner/orgs/<int:org_id>/template/upload', methods=['POST'])
+@owner_required
+def owner_org_upload_template(org_id):
+    """Принять .xlsx-шаблон отчёта по ревизии и привязать его к компании.
+    После этого _build_revision_xlsx будет заполнять остатки в этом шаблоне.
+    """
+    org = db.session.get(Organization, org_id)
+    if not org:
+        flash('Компания не найдена.', 'error')
+        return redirect('/owner/orgs')
+    f = request.files.get('file')
+    if not f or not f.filename:
+        flash('Файл не выбран.', 'error')
+        return redirect(f'/owner/orgs/{org_id}')
+    if not f.filename.lower().endswith('.xlsx'):
+        flash('Нужен файл .xlsx (Excel 2007+). Старый .xls и .xml не подходят — пересохраните в .xlsx.', 'error')
+        return redirect(f'/owner/orgs/{org_id}')
+    try:
+        data = f.read()
+        # Проверим, что openpyxl может это прочитать — иначе при ревизии будет крах
+        import openpyxl as _opx
+        _opx.load_workbook(BytesIO(data))
+        org.excel_template = data
+        db.session.commit()
+        log_owner_action('upload_template', target_org_id=org.id,
+                         details=f'size={len(data)}')
+        flash(f'Шаблон отчёта обновлён ({len(data)} байт).', 'success')
+    except Exception as e:
+        db.session.rollback()
+        flash(f'Не удалось прочитать файл как .xlsx: {e}', 'error')
+    return redirect(f'/owner/orgs/{org_id}')
+
+
+@app.route('/owner/orgs/<int:org_id>/template/remove', methods=['POST'])
+@owner_required
+def owner_org_remove_template(org_id):
+    org = db.session.get(Organization, org_id)
+    if not org:
+        flash('Компания не найдена.', 'error')
+        return redirect('/owner/orgs')
+    org.excel_template = None
+    db.session.commit()
+    log_owner_action('remove_template', target_org_id=org.id)
+    flash('Шаблон отчёта снят. Отчёт будет генериться в стандартном виде.', 'success')
+    return redirect(f'/owner/orgs/{org_id}')
 
 
 @app.route('/owner/stop_impersonate')
@@ -6908,6 +6977,41 @@ owner_org_detail_html = (
     </form>
   </div>
 
+  <!-- Шаблон бланка отчёта -->
+  <div class="section-card">
+    <div class="section-title">📄 Шаблон бланка отчёта (.xlsx)</div>
+    <div style="font-size:12px;color:rgba(255,255,255,0.6);margin-bottom:12px;">
+      При завершении ревизии остатки подставятся в этот шаблон.
+      Колонка <b>B</b> = код товара, колонка <b>C</b> = название (фолбэк),
+      колонка <b>G</b> — туда пишется фактический остаток.
+      Если шаблон не загружен — будет стандартный отчёт.
+    </div>
+    {% if has_template %}
+    <div style="background:rgba(34,197,94,0.12);border:1px solid rgba(34,197,94,0.3);border-radius:10px;padding:10px 12px;font-size:13px;margin-bottom:12px;">
+      ✅ Шаблон загружен · <b>{{ template_size }}</b> байт
+    </div>
+    <form method="post" action="/owner/orgs/{{ org.id }}/template/remove"
+          onsubmit="return confirm('Удалить шаблон? Отчёты будут генериться в стандартном виде.');"
+          style="display:inline;">
+      <button type="submit" class="btn-primary-sm" style="background:#ef4444;">Удалить шаблон</button>
+    </form>
+    <span style="font-size:12px;color:rgba(255,255,255,0.5);margin-left:8px;">или замените, загрузив новый ниже</span>
+    {% else %}
+    <div style="background:rgba(245,158,11,0.12);border:1px solid rgba(245,158,11,0.3);border-radius:10px;padding:10px 12px;font-size:13px;margin-bottom:12px;">
+      ⚠ Шаблон не загружен — отчёт будет в стандартном формате
+    </div>
+    {% endif %}
+    <form method="post" action="/owner/orgs/{{ org.id }}/template/upload"
+          enctype="multipart/form-data" style="margin-top:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+      <input type="file" name="file" accept=".xlsx" required
+             style="color:rgba(255,255,255,0.85);font-size:13px;">
+      <button type="submit" class="btn-primary-sm">Загрузить шаблон</button>
+    </form>
+    <div style="font-size:11px;color:rgba(255,255,255,0.4);margin-top:8px;">
+      Поддерживается только .xlsx (Excel 2007+). Старые .xls и XML SpreadsheetML нужно пересохранить.
+    </div>
+  </div>
+
   <!-- Пользователи -->
   <div class="section-card">
     <div class="section-title">👥 Пользователи компании</div>
@@ -7387,6 +7491,25 @@ with app.app_context():
             conn.commit()
     except Exception as _e:
         print(f'⚠️  Миграция колонок organizations: {_e}')
+
+    # Привязка кастомного бланка отчёта к ООО "Прайд".
+    # Если в репо лежит template_pride.xlsx и у Прайда ещё нет своего шаблона —
+    # подгружаем его автоматически (как у Мобара). Дальше админ Прайда может
+    # перезагрузить шаблон через owner-панель.
+    try:
+        _tpl_path = os.path.join(os.path.dirname(__file__), 'template_pride.xlsx')
+        if os.path.exists(_tpl_path):
+            _pride = Organization.query.filter(
+                Organization.name.ilike('%прайд%')
+            ).first()
+            if _pride and not _pride.excel_template:
+                with open(_tpl_path, 'rb') as _f:
+                    _pride.excel_template = _f.read()
+                db.session.commit()
+                print(f'✅ Шаблон отчёта привязан к {_pride.name!r}')
+    except Exception as _e:
+        db.session.rollback()
+        print(f'⚠️  Привязка шаблона Прайда: {_e}')
 
     # Чистка: убираем сокращение " в асс" / " в ассорт" / " в ассортименте"
     # из названий товаров. Звучит двусмысленно, и пользователь явно попросил
