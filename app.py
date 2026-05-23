@@ -1506,6 +1506,7 @@ def revision():
         norms_map=norms_map,
         is_admin=is_admin,
         rev_status=(current_rev.status if current_rev else None),
+        current_rev_id=(current_rev.id if current_rev else None),
         total_products=total_products,
         counted_products=counted_products,
         progress_pct=progress_pct,
@@ -1592,6 +1593,53 @@ def revision_finish():
         rev.finished_at = datetime.utcnow()
         db.session.commit()
         return jsonify({'ok': True})
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'ok': False, 'error': str(e)}), 400
+
+
+@app.route('/revision/reset', methods=['POST'])
+@login_required_user
+def revision_reset():
+    """Только для админа: отменяет ВСЕ открытые (in_progress/pending) ревизии
+    указанной локации и удаляет их позиции. Используется, когда оператор не
+    может закрыть ревизию или нужно полностью обнулить экран ревизии.
+    Завершённые ревизии не трогаем — это исторический отчёт.
+    """
+    org = _current_org()
+    if not org:
+        return jsonify({'ok': False, 'error': 'no org'}), 400
+    is_admin = (current_user.user and current_user.user.role == 'admin')
+    if not is_admin:
+        return jsonify({'ok': False, 'error': 'forbidden'}), 403
+    try:
+        location_id = int(request.form.get('location_id') or request.args.get('location_id') or 0)
+    except (TypeError, ValueError):
+        return jsonify({'ok': False, 'error': 'bad location_id'}), 400
+
+    loc = Location.query.filter_by(id=location_id, org_id=org.id).first()
+    if not loc:
+        return jsonify({'ok': False, 'error': 'location not found'}), 404
+
+    try:
+        open_revs = Revision.query.filter(
+            Revision.org_id == org.id,
+            Revision.location_id == loc.id,
+            Revision.status.in_(['in_progress', 'pending']),
+        ).all()
+        items_removed = 0
+        for _r in open_revs:
+            items_removed += RevisionItem.query.filter_by(revision_id=_r.id).delete(
+                synchronize_session=False
+            )
+            _r.status = 'cancelled'
+            _r.finished_at = datetime.utcnow()
+        db.session.commit()
+        return jsonify({
+            'ok': True,
+            'revisions_cancelled': len(open_revs),
+            'items_removed': items_removed,
+        })
     except Exception as e:
         db.session.rollback()
         return jsonify({'ok': False, 'error': str(e)}), 400
@@ -5282,6 +5330,8 @@ header p{font-size:12px;color:rgba(255,255,255,0.4);margin-top:2px;}
 .empty-msg .hint{font-size:13px;color:rgba(255,255,255,0.5);}
 .finish-btn{position:fixed;bottom:20px;left:20px;right:20px;background:linear-gradient(135deg,#7c6cf0,#a855f7);color:#fff;border:none;padding:16px;border-radius:16px;font-size:16px;font-weight:700;cursor:pointer;font-family:'Outfit',sans-serif;box-shadow:0 8px 24px rgba(124,108,240,0.45);z-index:90;}
 .finish-btn:disabled{opacity:0.5;cursor:not-allowed;}
+.reset-btn{position:fixed;bottom:84px;left:20px;right:20px;background:rgba(239,68,68,0.14);color:#fca5a5;border:1px solid rgba(239,68,68,0.35);padding:10px;border-radius:12px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Outfit',sans-serif;z-index:89;}
+.reset-btn:hover{background:rgba(239,68,68,0.22);}
 /* Modal */
 .modal{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(10,8,20,0.7);backdrop-filter:blur(6px);z-index:1000;align-items:flex-end;}
 .modal.active{display:flex;animation:fadein 0.2s;}
@@ -5426,6 +5476,11 @@ header p{font-size:12px;color:rgba(255,255,255,0.4);margin-top:2px;}
   <button class="finish-btn" disabled>⏳ Ожидание подтверждения...</button>
 {% else %}
   <button class="finish-btn" onclick="requestFinish()">Завершить ревизию</button>
+{% endif %}
+{% if is_admin and current_rev_id %}
+<button class="reset-btn" onclick="resetRevision()" title="Отменить текущую открытую ревизию и стереть подсчёты на этой локации">
+  🗑 Сбросить ревизию
+</button>
 {% endif %}
 {% endif %}
 {% endif %}
@@ -5690,6 +5745,20 @@ async function confirmFinish() {
   document.getElementById('sentModal').classList.add('active');
 }
 function closeSentModal() { document.getElementById('sentModal').classList.remove('active'); location.reload(); }
+async function resetRevision() {
+  if (!confirm('Отменить текущую открытую ревизию на этой локации и стереть все подсчёты? Завершённые ревизии в истории не пострадают.')) return;
+  const fd = new FormData();
+  fd.append('location_id', {{ selected.id if selected else 0 }});
+  try {
+    const res = await fetch('/revision/reset', {method:'POST', body:fd});
+    const data = await res.json();
+    if (data.ok) {
+      location.reload();
+    } else {
+      alert('Не удалось сбросить: ' + (data.error || 'ошибка'));
+    }
+  } catch(e) { alert('Ошибка: ' + e); }
+}
 </script>
 </body>
 </html>'''
@@ -7594,13 +7663,20 @@ with app.app_context():
         db.session.rollback()
         print(f'⚠️  Привязка шаблона Прайда: {_e}')
 
-    # One-shot чистка orphan-ревизий: если на одной локации зависло несколько
-    # in_progress / pending ревизий (наследие гонки до фикса в
-    # _get_or_create_active_revision), оставляем самую свежую (или ту, что
-    # сейчас в pending — она важнее), остальные отменяем и чистим их позиции.
-    # Идемпотентно: после первого прохода дубликатов не остаётся.
+    # Чистка orphan-ревизий в две стадии. Идемпотентно: после первого прохода
+    # ничего не меняется.
+    #
+    # (1) Дубликаты: если на одной локации >1 in_progress/pending — оставляем
+    #     самую свежую (pending в приоритете), остальные отменяем.
+    # (2) Реликты: если есть `completed` ревизия новее, чем in_progress/pending
+    #     на той же локации — старая открытая = orphan, отменяем её.
+    #     Это ловит случай, когда раньше (до фиксов) подтверждалась одна из
+    #     ревизий-сиблингов, а другая (in_progress) с данными так и осталась.
     try:
         from sqlalchemy import func as _sa_func2
+        _orphans_cleared = 0
+
+        # (1) дубликаты
         _dup_pairs = (
             db.session.query(Revision.org_id, Revision.location_id)
             .filter(Revision.status.in_(['in_progress', 'pending']))
@@ -7609,23 +7685,46 @@ with app.app_context():
             .having(_sa_func2.count(Revision.id) > 1)
             .all()
         )
-        _orphans_cleared = 0
         for _org_id, _loc_id in _dup_pairs:
             _candidates = Revision.query.filter(
                 Revision.org_id == _org_id,
                 Revision.location_id == _loc_id,
                 Revision.status.in_(['in_progress', 'pending']),
             ).order_by(
-                # pending > in_progress (по приоритету), потом по дате
                 (Revision.status == 'pending').desc(),
                 Revision.created_at.desc(),
             ).all()
-            _keep = _candidates[0]
             for _r in _candidates[1:]:
                 RevisionItem.query.filter_by(revision_id=_r.id).delete(synchronize_session=False)
                 _r.status = 'cancelled'
                 _r.finished_at = datetime.utcnow()
                 _orphans_cleared += 1
+
+        # (2) реликты, оставшиеся под завершёнными
+        _latest_completed_per_loc = dict(
+            db.session.query(
+                Revision.location_id,
+                _sa_func2.max(Revision.finished_at),
+            )
+            .filter(Revision.status == 'completed')
+            .filter(Revision.location_id.isnot(None))
+            .group_by(Revision.location_id)
+            .all()
+        )
+        for _loc_id, _completed_at in _latest_completed_per_loc.items():
+            if not _completed_at:
+                continue
+            _stale = Revision.query.filter(
+                Revision.location_id == _loc_id,
+                Revision.status.in_(['in_progress', 'pending']),
+                Revision.created_at <= _completed_at,
+            ).all()
+            for _r in _stale:
+                RevisionItem.query.filter_by(revision_id=_r.id).delete(synchronize_session=False)
+                _r.status = 'cancelled'
+                _r.finished_at = datetime.utcnow()
+                _orphans_cleared += 1
+
         if _orphans_cleared:
             db.session.commit()
             print(f'🧹 Отменено orphan-ревизий: {_orphans_cleared}')
