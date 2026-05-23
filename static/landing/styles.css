@@ -543,9 +543,15 @@ a { color: inherit; text-decoration: none; transition: color .15s; }
   transform: translateY(-2px);
 }
 .problem-icon {
-  font-size: 36px;
+  width: 48px; height: 48px;
+  border-radius: 12px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: linear-gradient(135deg, rgba(239, 68, 68, 0.14), rgba(239, 68, 68, 0.04));
+  border: 1px solid rgba(239, 68, 68, 0.22);
+  color: #fca5a5;
   margin-bottom: 18px;
 }
+.problem-icon svg { width: 24px; height: 24px; }
 .problem-card h3 {
   font-size: 19px;
   font-weight: 700;
@@ -584,9 +590,15 @@ a { color: inherit; text-decoration: none; transition: color .15s; }
   background: rgba(255, 255, 255, 0.04);
 }
 .feature-icon {
-  font-size: 32px;
-  margin-bottom: 16px;
+  width: 48px; height: 48px;
+  border-radius: 12px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: linear-gradient(135deg, rgba(124, 108, 240, 0.18), rgba(168, 85, 247, 0.06));
+  border: 1px solid rgba(124, 108, 240, 0.28);
+  color: #c4b5fd;
+  margin-bottom: 18px;
 }
+.feature-icon svg { width: 24px; height: 24px; }
 .feature h3 {
   font-size: 18px;
   font-weight: 700;

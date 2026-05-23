@@ -10,7 +10,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/landing/styles.css?v=3">
+<link rel="stylesheet" href="/static/landing/styles.css?v=4">
 </head>
 <body>
 
@@ -157,17 +157,23 @@
 
     <div class="problem-cards">
       <div class="problem-card">
-        <div class="problem-icon">📓</div>
+        <div class="problem-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4.5A2.5 2.5 0 0 1 6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5z"/><path d="M8 7h8M8 11h8M8 15h5"/><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/></svg>
+        </div>
         <h3>Тетрадка с ошибками</h3>
         <p>Линейный персонал считает на коленке, цифры переписывают трижды. К утру владелец не понимает, где недостача — в подсчёте или в реальности.</p>
       </div>
       <div class="problem-card">
-        <div class="problem-icon">📊</div>
+        <div class="problem-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><rect x="7" y="13" width="3" height="5"/><rect x="12" y="9" width="3" height="9"/><rect x="17" y="6" width="3" height="12"/></svg>
+        </div>
         <h3>Excel рассинхронизирован</h3>
         <p>У каждой точки своя версия таблицы. Кто-то правит на ноуте, кто-то на телефоне, версии расходятся, файл теряется в почте.</p>
       </div>
       <div class="problem-card">
-        <div class="problem-icon">🏗️</div>
+        <div class="problem-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
+        </div>
         <h3>Комплексные системы — перебор</h3>
         <p>Полнофункциональные системы для общепита: внедрение пара недель, обучение персонала, цена в разы выше. Для 2-5 точек — это слишком тяжёлый инструмент.</p>
       </div>
@@ -186,32 +192,44 @@
 
     <div class="feature-grid">
       <div class="feature">
-        <div class="feature-icon">📱</div>
+        <div class="feature-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="2" width="10" height="20" rx="2"/><path d="M11 18h2"/></svg>
+        </div>
         <h3>Mobile-first</h3>
         <p>Считаете прямо у стеллажа: открыли приложение, ввели остатки, перешли к следующей позиции. Никакого «сначала на бумагу, потом в компьютер».</p>
       </div>
       <div class="feature">
-        <div class="feature-icon">🔄</div>
+        <div class="feature-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 15.5-6.3L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15.5 6.3L3 16"/><path d="M3 21v-5h5"/></svg>
+        </div>
         <h3>Все точки в одном экране</h3>
         <p>2-3 кафе синхронизируются в реальном времени. Видите остатки и недостачи по сети, не звоня каждому управляющему.</p>
       </div>
       <div class="feature">
-        <div class="feature-icon">⚡</div>
+        <div class="feature-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+        </div>
         <h3>Расхождения мгновенно</h3>
         <p>Система сравнивает плановые и фактические остатки автоматически. Сразу видно, где списания подозрительные.</p>
       </div>
       <div class="feature">
-        <div class="feature-icon">📤</div>
+        <div class="feature-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3v4a1 1 0 0 0 1 1h4"/><path d="M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2z"/><path d="M9 13l3-3 3 3M12 10v7"/></svg>
+        </div>
         <h3>Экспорт в Excel</h3>
         <p>Любую ревизию выгружаете в .xlsx или .csv для бухгалтерии и поставщиков. История хранится навсегда.</p>
       </div>
       <div class="feature">
-        <div class="feature-icon">👥</div>
+        <div class="feature-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+        </div>
         <h3>Доступы для персонала</h3>
         <p>Управляющий, повар, бухгалтер — у каждого свой логин и свои права. История действий — кто, когда, что считал.</p>
       </div>
       <div class="feature">
-        <div class="feature-icon">🚀</div>
+        <div class="feature-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M21 3c-1 9-6 14-15 15l-3-6 6-3 3-3 6-3z"/><path d="M9 15l-6-3"/><circle cx="14" cy="10" r="1.5"/></svg>
+        </div>
         <h3>Без обучения</h3>
         <p>Интерфейс понятен повару, не только бухгалтеру. Линейный персонал начинает считать без инструкций.</p>
       </div>
