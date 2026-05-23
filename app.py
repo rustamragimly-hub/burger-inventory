@@ -1687,6 +1687,7 @@ def _build_revision_xlsx(rev):
     import openpyxl
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
 
     org = db.session.get(Organization, rev.org_id)
     loc = db.session.get(Location, rev.location_id) if rev.location_id else None
@@ -1694,17 +1695,33 @@ def _build_revision_xlsx(rev):
 
     items = RevisionItem.query.filter_by(revision_id=rev.id).all()
 
+    # Считаем фактическое количество по товарам в этой ревизии
+    qty_by_pid = {}
+    for it in items:
+        qty_by_pid[it.product_id] = qty_by_pid.get(it.product_id, 0) + (it.quantity or 0)
+
+    # Источник списка товаров в отчёте — ассортимент локации ревизии:
+    # ровно те товары, что включены в эту локацию, ничего сверху и ничего лишнего.
+    # Если ассортимент пуст (старая компания без настройки) — fallback на тех,
+    # кого фактически считали в ревизии, чтобы не получить совсем пустой отчёт.
+    report_pids = set()
+    if rev.location_id:
+        report_pids = {lp.product_id for lp in LocationProduct.query.filter_by(
+            location_id=rev.location_id
+        ).all()}
+    if not report_pids:
+        report_pids = set(qty_by_pid.keys())
+    products = {p.id: p for p in Product.query.filter(
+        Product.id.in_(report_pids), Product.is_active == True
+    ).all()} if report_pids else {}
+
     # Если у компании есть кастомный Excel-шаблон — заполняем его
     if org and org.excel_template:
-        pids = {i.product_id for i in items}
-        products = {p.id: p for p in Product.query.filter(Product.id.in_(pids)).all()} if pids else {}
-
-        # Агрегируем: код товара → суммарное количество
+        # Агрегируем: код товара → суммарное количество (только товары из ассортимента)
         aggregated = {}
-        for it in items:
-            p = products.get(it.product_id)
-            if p and p.code:
-                aggregated[p.code] = aggregated.get(p.code, 0) + (it.quantity or 0)
+        for pid, p in products.items():
+            if p.code:
+                aggregated[p.code] = qty_by_pid.get(pid, 0)
 
         wb = openpyxl.load_workbook(BytesIO(org.excel_template))
         ws = wb.active
@@ -1734,26 +1751,21 @@ def _build_revision_xlsx(rev):
         buf.seek(0)
         return buf
 
-    # Собрать все product_id, category_id
-    pids = {i.product_id for i in items}
-    products = {p.id: p for p in Product.query.filter(Product.id.in_(pids)).all()} if pids else {}
+    # Группировка идёт по всему ассортименту локации (а не только по
+    # фактически посчитанным позициям). Не посчитанные товары попадают в
+    # отчёт с нулём — оператору видно, что позиция была, но осталась пустой.
     cat_ids = {p.category_id for p in products.values() if p.category_id}
     cats = {c.id: c for c in Category.query.filter(Category.id.in_(cat_ids)).all()} if cat_ids else {}
 
-    # Агрегация: cat_name -> list of (code, name, unit, total_qty)
     grouped = {}
-    for it in items:
-        p = products.get(it.product_id)
-        if not p:
-            continue
+    for pid, p in products.items():
         c = cats.get(p.category_id) if p.category_id else None
         cat_name = c.name if c else 'Без категории'
-        key = (cat_name, p.id)
         grouped.setdefault(cat_name, {})
-        grouped[cat_name].setdefault(p.id, {
-            'code': p.code or '', 'name': p.name, 'unit': p.unit, 'qty': 0,
-        })
-        grouped[cat_name][p.id]['qty'] += (it.quantity or 0)
+        grouped[cat_name][pid] = {
+            'code': p.code or '', 'name': p.name, 'unit': p.unit,
+            'qty': qty_by_pid.get(pid, 0),
+        }
 
     wb = Workbook()
     ws = wb.active
@@ -1804,10 +1816,12 @@ def _build_revision_xlsx(rev):
             ws.cell(row=r, column=5, value=info['qty']).border = border
             r += 1
 
-    # Автоширина — упрощённо
+    # Автоширина — упрощённо. Используем get_column_letter напрямую, потому что
+    # ws.cell(row=1, col) для col∈2..5 вернёт MergedCell (A1:E1 объединена),
+    # а у MergedCell нет атрибута column_letter и валится с AttributeError.
     widths = {1: 14, 2: 48, 3: 12, 4: 22, 5: 22}
     for col, w in widths.items():
-        ws.column_dimensions[ws.cell(row=1, column=col).column_letter].width = w
+        ws.column_dimensions[get_column_letter(col)].width = w
 
     buf = BytesIO()
     wb.save(buf)
