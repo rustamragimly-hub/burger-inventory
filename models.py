@@ -175,7 +175,9 @@ class Revision(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     org_id = db.Column(db.Integer, db.ForeignKey('organizations.id'), nullable=False, index=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    # user_id и location_id nullable, чтобы при удалении пользователя/локации
+    # завершённые ревизии не исчезали из истории — мы просто обнуляем ссылку.
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=True)
     location_id = db.Column(db.Integer, db.ForeignKey('locations.id'), nullable=True)
 
     # 'in_progress' — идёт, 'pending' — ждёт админа, 'completed' — готова, 'cancelled' — отменена
@@ -194,7 +196,9 @@ class RevisionItem(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     revision_id = db.Column(db.Integer, db.ForeignKey('revisions.id'), nullable=False, index=True)
     product_id = db.Column(db.Integer, db.ForeignKey('products.id'), nullable=False)
-    location_id = db.Column(db.Integer, db.ForeignKey('locations.id'), nullable=False)
+    # location_id nullable — чтобы при удалении локации позиции уже завершённых
+    # ревизий не уничтожались, а просто теряли привязку к удалённой локации.
+    location_id = db.Column(db.Integer, db.ForeignKey('locations.id'), nullable=True)
 
     quantity = db.Column(db.Float, default=0)
     added_by_user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=True)

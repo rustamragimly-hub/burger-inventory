@@ -470,17 +470,31 @@ def login_required_user(fn):
 
 
 def _get_or_create_active_revision(org_id, location_id, user_id):
-    """Возвращает активную (in_progress) ревизию для (org, location) или создаёт."""
+    """Возвращает активную (in_progress) ревизию для (org, location) или создаёт.
+    На случай гонки (два оператора одновременно жмут добавить первую позицию)
+    после insert-исключения перезапрашиваем существующую запись.
+    """
+    from sqlalchemy.exc import IntegrityError
     rev = Revision.query.filter_by(
         org_id=org_id, location_id=location_id, status='in_progress'
     ).first()
-    if not rev:
-        rev = Revision(
-            org_id=org_id, user_id=user_id,
-            location_id=location_id, status='in_progress',
-        )
-        db.session.add(rev)
+    if rev:
+        return rev
+    rev = Revision(
+        org_id=org_id, user_id=user_id,
+        location_id=location_id, status='in_progress',
+    )
+    db.session.add(rev)
+    try:
         db.session.flush()
+    except IntegrityError:
+        db.session.rollback()
+        rev = Revision.query.filter_by(
+            org_id=org_id, location_id=location_id, status='in_progress'
+        ).first()
+        if rev:
+            return rev
+        raise
     return rev
 
 
@@ -490,7 +504,11 @@ def _seed_location_assortment_if_empty(org_id):
     каждый существующий товар приписываем ко всем существующим локациям.
     Это сохраняет старое поведение для компаний, у которых уже что-то накоплено,
     до тех пор пока админ не начнёт настраивать списки вручную.
+
+    Идемпотентно и устойчиво к гонке: при IntegrityError откатываемся и
+    выходим — значит параллельный запрос уже засеялся.
     """
+    from sqlalchemy.exc import IntegrityError
     loc_ids = [l.id for l in Location.query.filter_by(org_id=org_id).all()]
     if not loc_ids:
         return False
@@ -505,8 +523,12 @@ def _seed_location_assortment_if_empty(org_id):
     for lid in loc_ids:
         for pid in prod_ids:
             db.session.add(LocationProduct(location_id=lid, product_id=pid))
-    db.session.commit()
-    return True
+    try:
+        db.session.commit()
+        return True
+    except IntegrityError:
+        db.session.rollback()
+        return False
 
 
 def _product_in_location(location_id, product_id):
@@ -698,17 +720,33 @@ def admin_delete_location(loc_id):
         flash('Локация не найдена.', 'error')
         return redirect('/admin#tab-locations')
     try:
-        # Удалить нормы, привязанные к локации
-        ProductNorm.query.filter_by(location_id=loc.id).delete(synchronize_session=False)
-        # Удалить привязки товаров к локации (ассортимент)
-        LocationProduct.query.filter_by(location_id=loc.id).delete(synchronize_session=False)
-        # Удалить элементы ревизий на этой локации
         from models import RevisionItem, Revision
-        RevisionItem.query.filter_by(location_id=loc.id).delete(synchronize_session=False)
-        Revision.query.filter_by(location_id=loc.id).update({'location_id': None}, synchronize_session=False)
+        # Нормы и привязки ассортимента актуальны только для живой локации —
+        # их удаляем безопасно.
+        ProductNorm.query.filter_by(location_id=loc.id).delete(synchronize_session=False)
+        LocationProduct.query.filter_by(location_id=loc.id).delete(synchronize_session=False)
+        # Открытые ревизии на этой локации больше не имеют смысла — отменяем их.
+        open_revs = Revision.query.filter(
+            Revision.location_id == loc.id,
+            Revision.status.in_(['in_progress', 'pending']),
+        ).all()
+        for _rev in open_revs:
+            RevisionItem.query.filter_by(revision_id=_rev.id).delete(synchronize_session=False)
+            _rev.status = 'cancelled'
+            _rev.location_id = None
+            _rev.finished_at = datetime.utcnow()
+        # Для завершённых/отменённых ревизий историю сохраняем — обнуляем только
+        # ссылки на локацию (как в заголовке ревизии, так и в её позициях),
+        # чтобы FK не падала.
+        RevisionItem.query.filter(
+            RevisionItem.location_id == loc.id,
+        ).update({'location_id': None}, synchronize_session=False)
+        Revision.query.filter_by(location_id=loc.id).update(
+            {'location_id': None}, synchronize_session=False,
+        )
         db.session.delete(loc)
         db.session.commit()
-        flash('Локация удалена.', 'success')
+        flash('Локация удалена. Завершённые ревизии остались в истории, незавершённые — отменены.', 'success')
     except Exception as e:
         db.session.rollback()
         flash(f'Не удалось удалить локацию: {e}', 'error')
@@ -1078,11 +1116,17 @@ def admin_delete_user(uid):
         return redirect('/admin#tab-users')
     try:
         from models import RevisionItem, Revision
-        RevisionItem.query.filter_by(added_by_user_id=u.id).update({'added_by_user_id': None}, synchronize_session=False)
-        Revision.query.filter_by(user_id=u.id).delete(synchronize_session=False)
+        # Историю ревизий НЕ удаляем — просто обнуляем ссылку на этого юзера.
+        # Это сохраняет завершённые отчёты в неизменном виде.
+        RevisionItem.query.filter_by(added_by_user_id=u.id).update(
+            {'added_by_user_id': None}, synchronize_session=False
+        )
+        Revision.query.filter_by(user_id=u.id).update(
+            {'user_id': None}, synchronize_session=False
+        )
         db.session.delete(u)
         db.session.commit()
-        flash('Пользователь удалён.', 'success')
+        flash('Пользователь удалён. Его прошлые ревизии и подсчёты остались в истории.', 'success')
     except Exception as e:
         db.session.rollback()
         flash(f'Ошибка: {e}', 'error')
@@ -1565,6 +1609,8 @@ def revision_edit_item(item_id):
     rev = db.session.get(Revision, item.revision_id)
     if not rev or rev.org_id != org.id:
         return jsonify({'ok': False, 'error': 'forbidden'}), 403
+    if rev.status in ('completed', 'cancelled'):
+        return jsonify({'ok': False, 'error': 'Ревизия уже завершена — править её позиции нельзя.'}), 400
     is_admin = (current_user.user and current_user.user.role == 'admin')
     if not is_admin and item.added_by_user_id != current_user.raw_id:
         return jsonify({'ok': False, 'error': 'forbidden'}), 403
@@ -1602,6 +1648,8 @@ def revision_delete_item(item_id):
     rev = db.session.get(Revision, item.revision_id)
     if not rev or rev.org_id != org.id:
         return jsonify({'ok': False, 'error': 'forbidden'}), 403
+    if rev.status in ('completed', 'cancelled'):
+        return jsonify({'ok': False, 'error': 'Ревизия уже завершена — удалять её позиции нельзя.'}), 400
     # Только свою запись — или админ
     is_admin = (current_user.user and current_user.user.role == 'admin')
     if not is_admin and item.added_by_user_id != current_user.raw_id:
@@ -1638,9 +1686,14 @@ def revision_product_history(product_id):
     if not prod or not loc:
         return jsonify({'ok': True, 'items': [], 'total': 0})
 
-    rev = Revision.query.filter_by(
-        org_id=org.id, location_id=loc.id, status='in_progress'
-    ).first()
+    # Берём как in_progress, так и pending — чтобы оператор и админ видели
+    # историю позиции, пока ревизия ждёт подтверждения. Самую свежую
+    # (по created_at) на случай, если их несколько.
+    rev = Revision.query.filter(
+        Revision.org_id == org.id,
+        Revision.location_id == loc.id,
+        Revision.status.in_(['in_progress', 'pending']),
+    ).order_by(Revision.created_at.desc()).first()
     if not rev:
         return jsonify({'ok': True, 'items': [], 'total': 0})
 
@@ -1719,14 +1772,18 @@ def _build_revision_xlsx(rev):
     if org and org.excel_template:
         # Два индекса: по коду и по имени (lower). По коду — основной матч;
         # по имени — фолбэк для импортных позиций без кода (полуфабрикаты).
+        # Если в ассортименте оказались два товара с одинаковым кодом / именем
+        # (теоретически возможно — нет уникального ограничения в БД),
+        # суммируем количества, а не теряем второе.
         agg_by_code = {}
         agg_by_name = {}
         for pid, p in products.items():
             qty = qty_by_pid.get(pid, 0)
             if p.code:
-                agg_by_code[p.code] = qty
+                agg_by_code[p.code] = agg_by_code.get(p.code, 0) + qty
             if p.name:
-                agg_by_name[p.name.strip().lower()] = qty
+                key = p.name.strip().lower()
+                agg_by_name[key] = agg_by_name.get(key, 0) + qty
 
         wb = openpyxl.load_workbook(BytesIO(org.excel_template))
         ws = wb.active
@@ -7488,23 +7545,34 @@ with app.app_context():
             conn.execute(db.text(
                 'ALTER TABLE owner_users ADD COLUMN IF NOT EXISTS recovery_codes_json TEXT'
             ))
+            # Чтобы удаление пользователя/локации не уничтожало историю ревизий,
+            # делаем revisions.user_id и revision_items.location_id nullable.
+            # IF EXISTS — на случай если миграция уже была применена.
+            conn.execute(db.text('ALTER TABLE revisions ALTER COLUMN user_id DROP NOT NULL'))
+            conn.execute(db.text('ALTER TABLE revision_items ALTER COLUMN location_id DROP NOT NULL'))
             conn.commit()
     except Exception as _e:
         print(f'⚠️  Миграция колонок organizations: {_e}')
 
-    # Привязка кастомного бланка отчёта к ООО "Прайд".
-    # Если в репо лежит template_pride.xlsx и у Прайда ещё нет своего шаблона —
-    # подгружаем его автоматически (как у Мобара). Дальше админ Прайда может
-    # перезагрузить шаблон через owner-панель.
+    # Привязка кастомного бланка отчёта к ООО "Прайд". Срабатывает один раз —
+    # после успешной привязки в features ставится флаг и хук больше не лезет,
+    # даже если админ потом сам удалит шаблон через owner-панель.
     try:
         _tpl_path = os.path.join(os.path.dirname(__file__), 'template_pride.xlsx')
         if os.path.exists(_tpl_path):
             _pride = Organization.query.filter(
-                Organization.name.ilike('%прайд%')
+                Organization.name.ilike('ООО%прайд%')
             ).first()
-            if _pride and not _pride.excel_template:
+            # dict(...) — копия, иначе SQLAlchemy не заметит мутацию JSON-поля
+            _feats = dict(_pride.features or {}) if _pride else {}
+            if (
+                _pride and not _pride.excel_template
+                and not _feats.get('pride_template_seeded')
+            ):
                 with open(_tpl_path, 'rb') as _f:
                     _pride.excel_template = _f.read()
+                _feats['pride_template_seeded'] = True
+                _pride.features = _feats
                 db.session.commit()
                 print(f'✅ Шаблон отчёта привязан к {_pride.name!r}')
     except Exception as _e:
