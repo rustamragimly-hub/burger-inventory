@@ -1827,35 +1827,54 @@ def revision_product_history(product_id):
 
 
 # ============== АДМИН: РЕВИЗИИ (ЗАПРОСЫ/ИСТОРИЯ) ==============
-def _build_revision_xlsx(rev):
+def _build_revision_xlsx(revs):
     """Сгенерировать xlsx с итогами ревизии.
-    Если у компании есть кастомный шаблон (excel_template) — заполняем его.
-    Иначе генерируем стандартный отчёт.
+
+    `revs` — одна ревизия ИЛИ список ревизий. Если список — формируется общий
+    отчёт по ресторану: остаток каждого товара суммируется по всем локациям,
+    список товаров — объединение ассортиментов этих локаций.
+    Если у компании есть кастомный шаблон (excel_template) — заполняем его,
+    иначе генерируем стандартный отчёт.
     """
     import openpyxl
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
     from openpyxl.utils import get_column_letter
 
-    org = db.session.get(Organization, rev.org_id)
-    loc = db.session.get(Location, rev.location_id) if rev.location_id else None
-    user = db.session.get(User, rev.user_id) if rev.user_id else None
+    if not isinstance(revs, (list, tuple)):
+        revs = [revs]
+    revs = [r for r in revs if r]
+    primary = revs[0]
 
-    items = RevisionItem.query.filter_by(revision_id=rev.id).all()
+    org = db.session.get(Organization, primary.org_id)
+    user = db.session.get(User, primary.user_id) if primary.user_id else None
 
-    # Считаем фактическое количество по товарам в этой ревизии
+    loc_ids = [r.location_id for r in revs if r.location_id]
+    uniq_loc_ids = list(dict.fromkeys(loc_ids))
+    locs = {l.id: l for l in Location.query.filter(Location.id.in_(uniq_loc_ids)).all()} if uniq_loc_ids else {}
+    if len(uniq_loc_ids) > 1:
+        loc_label = 'Все локации'
+    elif uniq_loc_ids:
+        _l = locs.get(uniq_loc_ids[0])
+        loc_label = _l.name if _l else '—'
+    else:
+        loc_label = '—'
+
+    rev_ids = [r.id for r in revs]
+    items = RevisionItem.query.filter(RevisionItem.revision_id.in_(rev_ids)).all()
+
+    # Суммируем фактическое количество по товарам — по всем переданным ревизиям
+    # (т.е. по всем локациям сразу, если их несколько).
     qty_by_pid = {}
     for it in items:
         qty_by_pid[it.product_id] = qty_by_pid.get(it.product_id, 0) + (it.quantity or 0)
 
-    # Источник списка товаров в отчёте — ассортимент локации ревизии:
-    # ровно те товары, что включены в эту локацию, ничего сверху и ничего лишнего.
-    # Если ассортимент пуст (старая компания без настройки) — fallback на тех,
-    # кого фактически считали в ревизии, чтобы не получить совсем пустой отчёт.
+    # Список товаров отчёта — объединение ассортиментов всех локаций ревизий.
+    # Fallback на фактически посчитанные, если ассортимент нигде не настроен.
     report_pids = set()
-    if rev.location_id:
-        report_pids = {lp.product_id for lp in LocationProduct.query.filter_by(
-            location_id=rev.location_id
+    if uniq_loc_ids:
+        report_pids = {lp.product_id for lp in LocationProduct.query.filter(
+            LocationProduct.location_id.in_(uniq_loc_ids)
         ).all()}
     if not report_pids:
         report_pids = set(qty_by_pid.keys())
@@ -1883,7 +1902,7 @@ def _build_revision_xlsx(rev):
         wb = openpyxl.load_workbook(BytesIO(org.excel_template))
         ws = wb.active
 
-        today_str = (rev.finished_at or datetime.utcnow()).strftime('%d.%m.%Y')
+        today_str = (primary.finished_at or datetime.utcnow()).strftime('%d.%m.%Y')
 
         for row in range(1, ws.max_row + 1):
             for col in range(1, 10):
@@ -1985,13 +2004,13 @@ def _build_revision_xlsx(rev):
     ws['A1'] = 'Бланк инвентаризации'
     ws['A1'].font = Font(bold=True, size=16)
     ws.merge_cells('A1:E1')
-    date_str = (rev.finished_at or rev.created_at or datetime.utcnow()).strftime('%d.%m.%Y %H:%M')
+    date_str = (primary.finished_at or primary.created_at or datetime.utcnow()).strftime('%d.%m.%Y %H:%M')
     ws['A3'] = 'Дата:'
     ws['B3'] = date_str
     ws['A4'] = 'Компания:'
     ws['B4'] = org.name if org else ''
     ws['A5'] = 'Локация:'
-    ws['B5'] = loc.name if loc else '—'
+    ws['B5'] = loc_label
     ws['A6'] = 'Оператор:'
     ws['B6'] = user.username if user else '—'
 
@@ -2046,38 +2065,46 @@ def admin_revision_confirm(rev_id):
         flash('Ревизия не в статусе ожидания.', 'error')
         return redirect('/admin#tab-requests')
     try:
-        # ВАЖНО: несколько операторов на одной локации могут оказаться в РАЗНЫХ
-        # ревизиях (например, одна досчитала и нажала «Завершить» → pending, а
-        # вторая продолжила → создалась новая). Чтобы НЕ потерять ничьи подсчёты,
-        # перед построением отчёта СЛИВАЕМ позиции всех остальных открытых ревизий
-        # этой локации в подтверждаемую, а опустевшие ревизии отменяем.
-        # Раньше тут было удаление позиций «дублей» — это и приводило к потере
-        # данных второго человека.
-        if rev.location_id:
-            siblings = Revision.query.filter(
-                Revision.org_id == org.id,
-                Revision.location_id == rev.location_id,
-                Revision.status.in_(['in_progress', 'pending']),
-                Revision.id != rev.id,
-            ).all()
-            for _sib in siblings:
-                RevisionItem.query.filter_by(revision_id=_sib.id).update(
-                    {'revision_id': rev.id}, synchronize_session=False
-                )
-                _sib.status = 'cancelled'
-                _sib.finished_at = datetime.utcnow()
-            if siblings:
-                db.session.flush()
+        # Подтверждение закрывает ревизию всего ресторана: берём ВСЕ ожидающие
+        # (pending) ревизии компании, формируем ОДИН общий отчёт с суммированием
+        # остатков по всем локациям и помечаем их все completed. Так админ одним
+        # нажатием получает единый бланк по ресторану, а не файл на каждую точку.
+        pending_revs = Revision.query.filter_by(
+            org_id=org.id, status='pending'
+        ).all()
+        # На всякий случай гарантируем, что нажатая ревизия в наборе.
+        if rev.id not in {r.id for r in pending_revs}:
+            pending_revs.append(rev)
 
-        buf = _build_revision_xlsx(rev)
-        rev.status = 'completed'
-        if not rev.finished_at:
-            rev.finished_at = datetime.utcnow()
+        # Схлопываем дубли по локации (наследие гонок): если на одной локации
+        # несколько открытых ревизий — сливаем их позиции в одну, чтобы ничьи
+        # подсчёты не потерялись и в отчёте не было двойного счёта.
+        by_loc = {}
+        for r in pending_revs:
+            by_loc.setdefault(r.location_id, []).append(r)
+        confirmed = []
+        for _loc_id, _group in by_loc.items():
+            _keep = _group[0]
+            for _extra in _group[1:]:
+                RevisionItem.query.filter_by(revision_id=_extra.id).update(
+                    {'revision_id': _keep.id}, synchronize_session=False
+                )
+                _extra.status = 'cancelled'
+                _extra.finished_at = datetime.utcnow()
+            confirmed.append(_keep)
+        db.session.flush()
+
+        buf = _build_revision_xlsx(confirmed)
+        now = datetime.utcnow()
+        for _r in confirmed:
+            _r.status = 'completed'
+            if not _r.finished_at:
+                _r.finished_at = now
         db.session.commit()
-        loc = db.session.get(Location, rev.location_id) if rev.location_id else None
-        loc_name = (loc.name if loc else 'location').replace(' ', '_')
-        date_str = (rev.finished_at or datetime.utcnow()).strftime('%Y%m%d_%H%M')
-        fname = f'revision_{loc_name}_{date_str}.xlsx'
+
+        date_str = now.strftime('%Y%m%d_%H%M')
+        org_slug = (org.name or 'revision').replace(' ', '_').replace('"', '')
+        fname = f'revision_{org_slug}_{date_str}.xlsx'
         return send_file(
             buf, as_attachment=True, download_name=fname,
             mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -4685,7 +4712,7 @@ hr.soft { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 
   <div class="tab-content" id="tab-requests">
     <div class="card">
       <h2>Запросы на подтверждение <span class="count-pill">{{ pending_revs|length }}</span></h2>
-      <div class="tip">💡 Оператор отправил завершённую ревизию на проверку. Подтвердите — и xlsx-отчёт скачается автоматически.</div>
+      <div class="tip">{{ icon('alert', 15)|safe }} Подтверждение закрывает ревизию всего ресторана: все ожидающие локации объединяются в один общий бланк (остатки суммируются по локациям), и xlsx скачивается сразу.</div>
       {% if pending_revs %}
         {% for r in pending_revs %}
         <div class="row" style="flex-wrap:wrap;gap:10px;">
@@ -4694,8 +4721,8 @@ hr.soft { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 
             <div class="meta">Оператор: {{ r.user }} · {{ r.created_at }} · позиций: {{ r.items_count }}</div>
           </div>
           <div class="row-actions" style="gap:8px;">
-            <form method="post" action="/admin/revisions/confirm/{{ r.id }}" style="display:inline;">
-              <button class="btn btn-primary btn-small" type="submit">✅ Подтвердить</button>
+            <form method="post" action="/admin/revisions/confirm/{{ r.id }}" style="display:inline;" onsubmit="return confirm('Подтвердить ревизию всего ресторана? Все ожидающие локации войдут в один общий отчёт.');">
+              <button class="btn btn-primary btn-small" type="submit" style="display:inline-flex;align-items:center;gap:6px;">{{ icon('check', 15)|safe }} Подтвердить и скачать</button>
             </form>
             <form method="post" action="/admin/revisions/reject/{{ r.id }}" onsubmit="return confirm('Вернуть ревизию на пересчёт? Оператор сможет продолжить подсчёт.');" style="display:inline;">
               <button class="btn btn-small" style="background:#f59e0b;color:#fff;" type="submit">↩ На пересчёт</button>
