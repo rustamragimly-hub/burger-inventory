@@ -1910,7 +1910,10 @@ def _build_revision_xlsx(rev):
                     name_str = str(name_cell).strip().lower()
                     if name_str in agg_by_name:
                         qty = agg_by_name[name_str]
-            if qty is not None:
+            # Пишем остаток только если реально считали (qty > 0). Непосчитанные
+            # позиции оставляем пустыми — как в исходном iiko-бланке, где пустая
+            # ячейка означает «не считали». Нули в отчёте больше не появляются.
+            if qty:
                 try:
                     ws.cell(row=row, column=7, value=qty)
                 except AttributeError:
@@ -1984,7 +1987,8 @@ def _build_revision_xlsx(rev):
             ws.cell(row=r, column=2, value=info['name']).border = border
             ws.cell(row=r, column=3, value=info['unit']).border = border
             ws.cell(row=r, column=4, value=cat_name).border = border
-            ws.cell(row=r, column=5, value=info['qty']).border = border
+            # Непосчитанные позиции — пустая ячейка, а не 0 (нули убираем из отчёта).
+            ws.cell(row=r, column=5, value=(info['qty'] if info['qty'] else None)).border = border
             r += 1
 
     # Автоширина — упрощённо. Используем get_column_letter напрямую, потому что
@@ -2012,14 +2016,13 @@ def admin_revision_confirm(rev_id):
         flash('Ревизия не в статусе ожидания.', 'error')
         return redirect('/admin#tab-requests')
     try:
-        buf = _build_revision_xlsx(rev)
-        rev.status = 'completed'
-        if not rev.finished_at:
-            rev.finished_at = datetime.utcnow()
-        # После подтверждения локация должна стать «чистой» — никаких параллельных
-        # открытых ревизий, накопившихся из-за гонок. Любые другие in_progress /
-        # pending ревизии этой локации отменяем и удаляем их позиции (они были
-        # дублями той ревизии, что мы только что подтвердили).
+        # ВАЖНО: несколько операторов на одной локации могут оказаться в РАЗНЫХ
+        # ревизиях (например, одна досчитала и нажала «Завершить» → pending, а
+        # вторая продолжила → создалась новая). Чтобы НЕ потерять ничьи подсчёты,
+        # перед построением отчёта СЛИВАЕМ позиции всех остальных открытых ревизий
+        # этой локации в подтверждаемую, а опустевшие ревизии отменяем.
+        # Раньше тут было удаление позиций «дублей» — это и приводило к потере
+        # данных второго человека.
         if rev.location_id:
             siblings = Revision.query.filter(
                 Revision.org_id == org.id,
@@ -2028,9 +2031,18 @@ def admin_revision_confirm(rev_id):
                 Revision.id != rev.id,
             ).all()
             for _sib in siblings:
-                RevisionItem.query.filter_by(revision_id=_sib.id).delete(synchronize_session=False)
+                RevisionItem.query.filter_by(revision_id=_sib.id).update(
+                    {'revision_id': rev.id}, synchronize_session=False
+                )
                 _sib.status = 'cancelled'
                 _sib.finished_at = datetime.utcnow()
+            if siblings:
+                db.session.flush()
+
+        buf = _build_revision_xlsx(rev)
+        rev.status = 'completed'
+        if not rev.finished_at:
+            rev.finished_at = datetime.utcnow()
         db.session.commit()
         loc = db.session.get(Location, rev.location_id) if rev.location_id else None
         loc_name = (loc.name if loc else 'location').replace(' ', '_')
@@ -7720,20 +7732,15 @@ with app.app_context():
         db.session.rollback()
         print(f'⚠️  Привязка шаблона Прайда: {_e}')
 
-    # Чистка orphan-ревизий в две стадии. Идемпотентно: после первого прохода
-    # ничего не меняется.
-    #
-    # (1) Дубликаты: если на одной локации >1 in_progress/pending — оставляем
-    #     самую свежую (pending в приоритете), остальные отменяем.
-    # (2) Реликты: если есть `completed` ревизия новее, чем in_progress/pending
-    #     на той же локации — старая открытая = orphan, отменяем её.
-    #     Это ловит случай, когда раньше (до фиксов) подтверждалась одна из
-    #     ревизий-сиблингов, а другая (in_progress) с данными так и осталась.
+    # Схлопывание дублей открытых ревизий. Если на одной локации зависло
+    # несколько in_progress/pending ревизий (наследие гонок и старого бага,
+    # когда вторая сотрудница создавала отдельную ревизию), СЛИВАЕМ их позиции
+    # в одну, а опустевшие отменяем. Данные НЕ теряются — это ключевое отличие
+    # от прежней версии, которая удаляла позиции «дублей».
+    # Идемпотентно: после первого прохода дублей не остаётся.
     try:
         from sqlalchemy import func as _sa_func2
-        _orphans_cleared = 0
-
-        # (1) дубликаты
+        _merged = 0
         _dup_pairs = (
             db.session.query(Revision.org_id, Revision.location_id)
             .filter(Revision.status.in_(['in_progress', 'pending']))
@@ -7748,46 +7755,41 @@ with app.app_context():
                 Revision.location_id == _loc_id,
                 Revision.status.in_(['in_progress', 'pending']),
             ).order_by(
+                # главной делаем pending (её уже отправили на проверку),
+                # иначе — самую раннюю по дате создания
                 (Revision.status == 'pending').desc(),
-                Revision.created_at.desc(),
+                Revision.created_at.asc(),
             ).all()
+            _keep = _candidates[0]
             for _r in _candidates[1:]:
-                RevisionItem.query.filter_by(revision_id=_r.id).delete(synchronize_session=False)
+                RevisionItem.query.filter_by(revision_id=_r.id).update(
+                    {'revision_id': _keep.id}, synchronize_session=False
+                )
                 _r.status = 'cancelled'
                 _r.finished_at = datetime.utcnow()
-                _orphans_cleared += 1
-
-        # (2) реликты, оставшиеся под завершёнными
-        _latest_completed_per_loc = dict(
-            db.session.query(
-                Revision.location_id,
-                _sa_func2.max(Revision.finished_at),
-            )
-            .filter(Revision.status == 'completed')
-            .filter(Revision.location_id.isnot(None))
-            .group_by(Revision.location_id)
-            .all()
-        )
-        for _loc_id, _completed_at in _latest_completed_per_loc.items():
-            if not _completed_at:
-                continue
-            _stale = Revision.query.filter(
-                Revision.location_id == _loc_id,
-                Revision.status.in_(['in_progress', 'pending']),
-                Revision.created_at <= _completed_at,
-            ).all()
-            for _r in _stale:
-                RevisionItem.query.filter_by(revision_id=_r.id).delete(synchronize_session=False)
-                _r.status = 'cancelled'
-                _r.finished_at = datetime.utcnow()
-                _orphans_cleared += 1
-
-        if _orphans_cleared:
+                _merged += 1
+        if _merged:
             db.session.commit()
-            print(f'🧹 Отменено orphan-ревизий: {_orphans_cleared}')
+            print(f'Схлопнуто дублей ревизий (с сохранением данных): {_merged}')
     except Exception as _e:
         db.session.rollback()
-        print(f'⚠️  Чистка orphan-ревизий: {_e}')
+        print(f'Схлопывание дублей ревизий: {_e}')
+
+    # Партиал-уникальный индекс: не больше одной ОТКРЫТОЙ (in_progress/pending)
+    # ревизии на локацию. Создаётся после схлопывания дублей выше, иначе упадёт.
+    # С ним _get_or_create_active_revision ловит IntegrityError и возвращает
+    # существующую ревизию вместо создания второй — гонка двух операторов
+    # больше не плодит параллельные ревизии.
+    try:
+        with db.engine.connect() as conn:
+            conn.execute(db.text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_open_revision_per_loc "
+                "ON revisions (org_id, location_id) "
+                "WHERE status IN ('in_progress', 'pending') AND location_id IS NOT NULL"
+            ))
+            conn.commit()
+    except Exception as _e:
+        print(f'Индекс uq_open_revision_per_loc: {_e}')
 
     # Чистка: убираем сокращение " в асс" / " в ассорт" / " в ассортименте"
     # из названий товаров. Звучит двусмысленно, и пользователь явно попросил
