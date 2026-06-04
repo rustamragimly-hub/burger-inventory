@@ -131,12 +131,59 @@ _OWNER_PWA_HEAD = '''
 '''
 
 
+# ── SVG-иконки (Lucide-style, currentColor) ──────────────────────────
+# Заменяют emoji в UI чтобы интерфейс выглядел профессионально.
+_ICONS = {
+    'menu':       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>',
+    'mappin':     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>',
+    'folder':     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>',
+    'box':        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>',
+    'users':      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>',
+    'ruler':      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M21 3 3 21l-2-2 18-18z"/><path d="M7 17l2-2M10 14l2-2M13 11l2-2M16 8l2-2"/></svg>',
+    'download':   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>',
+    'inbox':      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>',
+    'archive':    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/></svg>',
+    'pencil':     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>',
+    'trash':      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6 17.7 20.1A2 2 0 0 1 15.7 22H8.3a2 2 0 0 1-2-1.9L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"/></svg>',
+    'chat':       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>',
+    'logout':     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>',
+    'chart':      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><rect x="7" y="13" width="3" height="5"/><rect x="12" y="9" width="3" height="9"/><rect x="17" y="6" width="3" height="12"/></svg>',
+    'shop':       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9 4.5 4h15L21 9"/><path d="M4 9v11a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1V9"/><path d="M9 21v-6h6v6"/></svg>',
+    'building':   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="3" width="16" height="18" rx="2"/><line x1="9" y1="9" x2="9" y2="9.01"/><line x1="15" y1="9" x2="15" y2="9.01"/><line x1="9" y1="13" x2="9" y2="13.01"/><line x1="15" y1="13" x2="15" y2="13.01"/><line x1="9" y1="17" x2="9" y2="17.01"/><line x1="15" y1="17" x2="15" y2="17.01"/></svg>',
+    'rotate':     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 15.5-6.3L21 8"/><path d="M21 3v5h-5"/></svg>',
+    'reset':      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>',
+    'plus':       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>',
+    'close':      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>',
+    'check':      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>',
+    'send':       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>',
+    'search':     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>',
+    'lock':       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>',
+    'ticket':     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9V6a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v3a2 2 0 0 0 0 4v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-3a2 2 0 0 0 0-4z"/><line x1="13" y1="5" x2="13" y2="7"/><line x1="13" y1="11" x2="13" y2="13"/><line x1="13" y1="17" x2="13" y2="19"/></svg>',
+    'sliders':    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>',
+    'file':       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>',
+    'megaphone':  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="m3 11 18-5v12L3 14v-3z"/><path d="M11.6 16.8a3 3 0 1 1-5.8-1.6"/></svg>',
+    'database':   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5"/><path d="M3 12a9 3 0 0 0 18 0"/></svg>',
+    'heartpulse': '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78L12 21.23l8.84-8.84a5.5 5.5 0 0 0 0-7.78z"/><path d="m3.66 12 4.34 0 1.5-3 3 6 1.5-3 4.34 0"/></svg>',
+    'terminal':   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>',
+    'alert':      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>',
+    'arrow-left': '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>',
+}
+
+
+def _icon(name, size=18):
+    svg = _ICONS.get(name, '')
+    if not svg:
+        return ''
+    return svg.replace('<svg ', f'<svg width="{size}" height="{size}" style="vertical-align:-3px;flex-shrink:0;" ', 1)
+
+
 @app.context_processor
 def _inject_pwa():
     return {
         'pwa_head': _PWA_HEAD,
         'owner_pwa_head': _OWNER_PWA_HEAD,
         'is_impersonating': bool(session.get('impersonating_owner_id')),
+        'icon': _icon,
     }
 
 
@@ -3692,6 +3739,7 @@ img, svg, video, canvas { max-width: 100%; height: auto; }
 }
 .tabs::-webkit-scrollbar { display: none; }
 .tab-pill {
+  display: inline-flex; align-items: center; gap: 7px;
   white-space: nowrap;
   padding: 9px 16px;
   border-radius: 20px;
@@ -3703,6 +3751,8 @@ img, svg, video, canvas { max-width: 100%; height: auto; }
   cursor: pointer;
   transition: all 0.15s;
 }
+.tab-pill svg { opacity: 0.85; }
+.tab-pill.active svg { opacity: 1; }
 .tab-pill.active {
   background: linear-gradient(135deg, #7c6cf0, #a855f7);
   color: white;
@@ -4124,12 +4174,14 @@ hr.soft { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 
 .drawer-org { font-size: 12px; color: rgba(255,255,255,0.55); margin-top: 2px; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .drawer-nav { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 4px; }
 .drawer-link {
-  display: flex; align-items: center; gap: 6px;
+  display: flex; align-items: center; gap: 10px;
   padding: 12px 14px; border-radius: 10px; cursor: pointer;
   font-size: 14px; color: rgba(255,255,255,0.85); text-decoration: none;
   background: rgba(255,255,255,0.02); border: 1px solid transparent;
   transition: all 0.15s;
 }
+.drawer-link svg { opacity: 0.78; flex-shrink: 0; }
+.drawer-link.active svg { opacity: 1; }
 .drawer-link:hover { background: rgba(255,255,255,0.06); }
 .drawer-link.active {
   background: linear-gradient(135deg, rgba(124,108,240,0.3), rgba(168,85,247,0.2));
@@ -4189,12 +4241,12 @@ hr.soft { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 
     <span></span><span></span><span></span>
   </button>
   <div class="brand">
-    <div class="name">👨‍💼 {{ org.name }}</div>
+    <div class="name" style="display:flex;align-items:center;gap:8px;">{{ icon('shop', 18)|safe }} {{ org.name }}</div>
     <div class="sub" id="header-sub">Админ панель</div>
   </div>
   <div class="actions">
-    <a class="btn" href="/revision">📊 Ревизия</a>
-    <a class="btn btn-danger" href="/logout" onclick="return confirm('Выйти из аккаунта?');">Выйти</a>
+    <a class="btn" href="/revision" style="display:inline-flex;align-items:center;gap:6px;">{{ icon('chart', 16)|safe }} Ревизия</a>
+    <a class="btn btn-danger" href="/logout" onclick="return confirm('Выйти из аккаунта?');" style="display:inline-flex;align-items:center;gap:6px;">{{ icon('logout', 16)|safe }} Выйти</a>
   </div>
 </div>
 
@@ -4209,30 +4261,30 @@ hr.soft { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 
     <button class="sp-close" onclick="toggleDrawer()" aria-label="Закрыть">✕</button>
   </div>
   <nav class="drawer-nav">
-    <a class="drawer-link active" data-tab="tab-locations" onclick="switchTab('tab-locations', true)">📍 Локации и ассортимент</a>
-    <a class="drawer-link" data-tab="tab-categories" onclick="switchTab('tab-categories', true)">🗂 Категории</a>
-    <a class="drawer-link" data-tab="tab-products" onclick="switchTab('tab-products', true)">📦 Товары</a>
-    <a class="drawer-link" data-tab="tab-users" onclick="switchTab('tab-users', true)">👥 Пользователи</a>
-    <a class="drawer-link" data-tab="tab-norms" onclick="switchTab('tab-norms', true)">📏 Нормы</a>
-    <a class="drawer-link" data-tab="tab-import" onclick="switchTab('tab-import', true)">📥 Импорт</a>
-    <a class="drawer-link" data-tab="tab-requests" onclick="switchTab('tab-requests', true)">📨 Запросы{% if pending_revs %} <span class="drawer-badge">{{ pending_revs|length }}</span>{% endif %}</a>
-    <a class="drawer-link" data-tab="tab-history" onclick="switchTab('tab-history', true)">🗂 История</a>
+    <a class="drawer-link active" data-tab="tab-locations" onclick="switchTab('tab-locations', true)">{{ icon('mappin', 18)|safe }} Локации и ассортимент</a>
+    <a class="drawer-link" data-tab="tab-categories" onclick="switchTab('tab-categories', true)">{{ icon('folder', 18)|safe }} Категории</a>
+    <a class="drawer-link" data-tab="tab-products" onclick="switchTab('tab-products', true)">{{ icon('box', 18)|safe }} Товары</a>
+    <a class="drawer-link" data-tab="tab-users" onclick="switchTab('tab-users', true)">{{ icon('users', 18)|safe }} Пользователи</a>
+    <a class="drawer-link" data-tab="tab-norms" onclick="switchTab('tab-norms', true)">{{ icon('ruler', 18)|safe }} Нормы</a>
+    <a class="drawer-link" data-tab="tab-import" onclick="switchTab('tab-import', true)">{{ icon('download', 18)|safe }} Импорт</a>
+    <a class="drawer-link" data-tab="tab-requests" onclick="switchTab('tab-requests', true)">{{ icon('inbox', 18)|safe }} Запросы{% if pending_revs %} <span class="drawer-badge">{{ pending_revs|length }}</span>{% endif %}</a>
+    <a class="drawer-link" data-tab="tab-history" onclick="switchTab('tab-history', true)">{{ icon('archive', 18)|safe }} История</a>
   </nav>
   <div class="drawer-footer">
-    <a href="/revision" class="drawer-foot-link">📊 К ревизии</a>
+    <a href="/revision" class="drawer-foot-link" style="display:flex;align-items:center;justify-content:center;gap:8px;">{{ icon('chart', 16)|safe }} К ревизии</a>
     <a href="/logout" class="drawer-foot-link drawer-foot-danger" onclick="return confirm('Выйти из аккаунта?');">↩ Выйти</a>
   </div>
 </aside>
 
 <!-- Floating support widget -->
 <button class="support-fab" id="support-fab" onclick="toggleSupportPanel()" title="Поддержка" aria-label="Открыть чат поддержки">
-  💬
+  {{ icon('chat', 24)|safe }}
 </button>
 <div class="support-panel" id="support-panel">
   <div class="sp-head">
     <button class="sp-back" id="sp-back" onclick="supportShowList()" style="display:none;" aria-label="Назад">←</button>
     <div style="flex:1;min-width:0;">
-      <div class="sp-title" id="sp-title">💬 Поддержка Revisi</div>
+      <div class="sp-title" id="sp-title">Поддержка Revisi</div>
       <div class="sp-sub" id="sp-sub">Ответим в течение рабочего дня</div>
     </div>
     <button class="sp-close" onclick="toggleSupportPanel()" aria-label="Закрыть">✕</button>
@@ -4269,14 +4321,14 @@ hr.soft { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 
 
 <div class="tabs-wrap">
   <div class="tabs" id="tabs">
-    <div class="tab-pill active" data-tab="tab-locations" onclick="switchTab('tab-locations')">📍 Локации и ассортимент</div>
-    <div class="tab-pill" data-tab="tab-categories" onclick="switchTab('tab-categories')">🗂 Категории</div>
-    <div class="tab-pill" data-tab="tab-products" onclick="switchTab('tab-products')">📦 Товары</div>
-    <div class="tab-pill" data-tab="tab-users" onclick="switchTab('tab-users')">👥 Пользователи</div>
-    <div class="tab-pill" data-tab="tab-norms" onclick="switchTab('tab-norms')">📏 Нормы</div>
-    <div class="tab-pill" data-tab="tab-import" onclick="switchTab('tab-import')">📥 Импорт</div>
-    <div class="tab-pill" data-tab="tab-requests" onclick="switchTab('tab-requests')">📨 Запросы{% if pending_revs %} <span style="background:#ef4444;color:white;padding:1px 7px;border-radius:999px;font-size:10px;margin-left:4px;">{{ pending_revs|length }}</span>{% endif %}</div>
-    <div class="tab-pill" data-tab="tab-history" onclick="switchTab('tab-history')">🗂 История</div>
+    <div class="tab-pill active" data-tab="tab-locations" onclick="switchTab('tab-locations')">{{ icon('mappin', 16)|safe }} Локации и ассортимент</div>
+    <div class="tab-pill" data-tab="tab-categories" onclick="switchTab('tab-categories')">{{ icon('folder', 16)|safe }} Категории</div>
+    <div class="tab-pill" data-tab="tab-products" onclick="switchTab('tab-products')">{{ icon('box', 16)|safe }} Товары</div>
+    <div class="tab-pill" data-tab="tab-users" onclick="switchTab('tab-users')">{{ icon('users', 16)|safe }} Пользователи</div>
+    <div class="tab-pill" data-tab="tab-norms" onclick="switchTab('tab-norms')">{{ icon('ruler', 16)|safe }} Нормы</div>
+    <div class="tab-pill" data-tab="tab-import" onclick="switchTab('tab-import')">{{ icon('download', 16)|safe }} Импорт</div>
+    <div class="tab-pill" data-tab="tab-requests" onclick="switchTab('tab-requests')">{{ icon('inbox', 16)|safe }} Запросы{% if pending_revs %} <span style="background:#ef4444;color:white;padding:1px 7px;border-radius:999px;font-size:10px;margin-left:4px;">{{ pending_revs|length }}</span>{% endif %}</div>
+    <div class="tab-pill" data-tab="tab-history" onclick="switchTab('tab-history')">{{ icon('archive', 16)|safe }} История</div>
   </div>
 </div>
 
@@ -4423,7 +4475,7 @@ hr.soft { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 
                 <div class="meta">{{ p.unit }}</div>
               </div>
               <div class="row-actions">
-                <button class="btn btn-small" onclick='openEditProduct({{ p.id }}, {{ p.name|tojson }}, {{ (p.code or "")|tojson }}, {{ p.unit|tojson }}, {{ (p.category_id or 0) }})'>✎</button>
+                <button class="btn btn-small" title="Редактировать" onclick='openEditProduct({{ p.id }}, {{ p.name|tojson }}, {{ (p.code or "")|tojson }}, {{ p.unit|tojson }}, {{ (p.category_id or 0) }})'>{{ icon('pencil', 14)|safe }}</button>
                 <button class="btn btn-danger btn-small" onclick="deleteProduct({{ p.id }}, {{ p.name|tojson }}, document.getElementById('prod-row-{{ p.id }}'))">×</button>
               </div>
             </div>
@@ -4441,7 +4493,7 @@ hr.soft { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 
               <div class="meta">{{ p.unit }}</div>
             </div>
             <div class="row-actions">
-              <button class="btn btn-small" onclick='openEditProduct({{ p.id }}, {{ p.name|tojson }}, {{ (p.code or "")|tojson }}, {{ p.unit|tojson }}, 0)'>✎</button>
+              <button class="btn btn-small" title="Редактировать" onclick='openEditProduct({{ p.id }}, {{ p.name|tojson }}, {{ (p.code or "")|tojson }}, {{ p.unit|tojson }}, 0)'>{{ icon('pencil', 14)|safe }}</button>
               <button class="btn btn-danger btn-small" onclick="deleteProduct({{ p.id }}, {{ p.name|tojson }}, document.getElementById('prod-row-{{ p.id }}'))">×</button>
             </div>
           </div>
@@ -4852,13 +4904,15 @@ function filterAssort() { renderAssortLists(); }
 
 let SP_CURRENT_TICKET = null;
 
+const SP_FAB_OPEN_SVG  = `{{ icon('close', 24)|safe }}`;
+const SP_FAB_CLOSE_SVG = `{{ icon('chat', 24)|safe }}`;
 function toggleSupportPanel() {
   const fab = document.getElementById('support-fab');
   const panel = document.getElementById('support-panel');
   if (!panel) return;
   const open = panel.classList.toggle('is-open');
   fab.classList.toggle('is-open', open);
-  fab.textContent = open ? '✕' : '💬';
+  fab.innerHTML = open ? SP_FAB_OPEN_SVG : SP_FAB_CLOSE_SVG;
   if (open) {
     supportShowList();
     supportLoadList();
@@ -4876,13 +4930,13 @@ function supportSetView(name) {
 function supportShowList() {
   SP_CURRENT_TICKET = null;
   supportSetView('list');
-  document.getElementById('sp-title').textContent = '💬 Поддержка Revisi';
+  document.getElementById('sp-title').textContent = 'Поддержка Revisi';
   document.getElementById('sp-sub').textContent = 'Ответим в течение рабочего дня';
 }
 
 function supportShowNew() {
   supportSetView('new');
-  document.getElementById('sp-title').textContent = '💬 Новое обращение';
+  document.getElementById('sp-title').textContent = 'Новое обращение';
   document.getElementById('sp-sub').textContent = 'Опишите проблему — мы ответим';
   setTimeout(() => document.querySelector('#support-quick-form input[name=subject]')?.focus(), 100);
 }
@@ -4925,7 +4979,7 @@ async function supportOpenTicket(ticketId) {
   supportSetView('chat');
   const msgEl = document.getElementById('sp-messages');
   msgEl.innerHTML = '<div class="sp-empty">Загрузка переписки…</div>';
-  document.getElementById('sp-title').textContent = '💬 Обращение #' + ticketId;
+  document.getElementById('sp-title').textContent = 'Обращение #' + ticketId;
   document.getElementById('sp-sub').textContent = 'Загрузка…';
   try {
     const res = await fetch('/support/api/ticket/' + ticketId, { headers: {'X-Requested-With': 'XMLHttpRequest'} });
@@ -4935,7 +4989,7 @@ async function supportOpenTicket(ticketId) {
       return;
     }
     const t = data.ticket;
-    document.getElementById('sp-title').textContent = '💬 ' + (t.subject.length > 28 ? t.subject.slice(0, 28) + '…' : t.subject);
+    document.getElementById('sp-title').textContent = (t.subject.length > 30 ? t.subject.slice(0, 30) + '…' : t.subject);
     document.getElementById('sp-sub').textContent = 'Статус: ' + ({open:'открыт',answered:'отвечен',closed:'закрыт'}[t.status] || t.status);
     renderSupportMessages(t.messages);
     // Hide reply form if closed
@@ -5391,12 +5445,12 @@ header p{font-size:12px;color:rgba(255,255,255,0.4);margin-top:2px;}
 <body>
 <header>
   <div>
-    <h1>📊 {{ org.name }}</h1>
+    <h1 style="display:inline-flex;align-items:center;gap:8px;">{{ icon('shop', 20)|safe }} {{ org.name }}</h1>
     <p>Ревизия · {{ username }}</p>
   </div>
   <div class="hbtns">
-    {% if is_admin %}<a href="/admin" class="hbtn hbtn-outline">⚙️ Админ</a>{% endif %}
-    <a href="/logout" class="hbtn hbtn-outline" onclick="return confirm('Выйти из аккаунта?');">Выйти</a>
+    {% if is_admin %}<a href="/admin" class="hbtn hbtn-outline" style="display:inline-flex;align-items:center;gap:6px;">{{ icon('sliders', 14)|safe }} Админ</a>{% endif %}
+    <a href="/logout" class="hbtn hbtn-outline" onclick="return confirm('Выйти из аккаунта?');" style="display:inline-flex;align-items:center;gap:6px;">{{ icon('logout', 14)|safe }} Выйти</a>
   </div>
 </header>
 
@@ -5479,7 +5533,7 @@ header p{font-size:12px;color:rgba(255,255,255,0.4);margin-top:2px;}
 {% endif %}
 {% if is_admin and current_rev_id %}
 <button class="reset-btn" onclick="resetRevision()" title="Отменить текущую открытую ревизию и стереть подсчёты на этой локации">
-  🗑 Сбросить ревизию
+  <span style="display:inline-flex;align-items:center;gap:7px;">{{ icon('reset', 16)|safe }} Сбросить ревизию</span>
 </button>
 {% endif %}
 {% endif %}
@@ -5991,10 +6045,13 @@ body {
     display: flex; gap: 4px; padding: 16px 24px 0;
 }
 .nav-tab {
+    display: inline-flex; align-items: center; gap: 7px;
     padding: 9px 18px; border-radius: 12px; font-size: 14px; font-weight: 600;
     text-decoration: none; color: rgba(255,255,255,0.55);
     transition: all 0.2s;
 }
+.nav-tab svg { opacity: 0.78; }
+.nav-tab.active svg { opacity: 1; }
 .nav-tab:hover { background: rgba(255,255,255,0.07); color: white; }
 .nav-tab.active {
     background: rgba(124,108,240,0.2); color: #a78bfa;
@@ -6191,7 +6248,7 @@ textarea.broadcast-area:focus { outline: none; border-color: rgba(124,108,240,0.
 }
 .btab:active { background: rgba(124,108,240,0.1); }
 .btab.active { color: #a78bfa; }
-.btab .bicon { font-size: 22px; line-height: 1; }
+.btab .bicon { display: inline-flex; align-items: center; justify-content: center; height: 22px; }
 .btab .blabel { font-size: 10px; font-weight: 600; }
 
 /* === BOTTOM SHEET «ЕЩЁ» === */
@@ -6249,7 +6306,7 @@ textarea.broadcast-area:focus { outline: none; border-color: rgba(124,108,240,0.
     border-color: rgba(124,108,240,0.4);
     color: #a78bfa;
 }
-.mtab .micon { font-size: 26px; line-height: 1; }
+.mtab .micon { display: inline-flex; align-items: center; justify-content: center; height: 26px; }
 
 /* === ПЛАНШЕТ (≤900px) === */
 @media (max-width: 900px) {
@@ -6347,7 +6404,7 @@ _OWNER_PAGE_HEAD = '''<!DOCTYPE html>
 <div class="blob blob-1"></div>
 <div class="blob blob-2"></div>
 <header class="owner-header">
-  <div class="brand">📊 <span>Панель владельца</span></div>
+  <div class="brand" style="display:flex;align-items:center;gap:10px;">{{ icon('chart', 22)|safe }} <span>Панель владельца</span></div>
   <div class="right">
     <span class="owner-email">{{ owner_email }}</span>
     <a class="btn-logout" href="/owner/logout">Выйти</a>
@@ -6368,19 +6425,19 @@ _OWNER_PAGE_FOOT = '''
 </body></html>'''
 
 
-# Список вкладок для top + bottom nav
+# Список вкладок для top + bottom nav (иконка = ключ в _ICONS, генерится через _icon())
 _OWNER_TABS = [
-    ('dashboard', '/owner', '📊', 'Дашборд'),
-    ('orgs', '/owner/orgs', '🏢', 'Компании'),
-    ('alerts', '/owner/alerts', '⚠️', 'Алерты'),
-    ('tickets', '/owner/tickets', '🎫', 'Тикеты'),
-    ('audit', '/owner/audit', '📋', 'Аудит'),
-    ('broadcast', '/owner/broadcast', '📨', 'Рассылка'),
-    ('catalog', '/owner/catalog', '📦', 'Каталог'),
-    ('backup', '/owner/backup', '🗄', 'Бэкап'),
-    ('health', '/owner/health', '🏥', 'Health'),
-    ('security', '/owner/security', '🔒', 'Безопасность'),
-    ('sql', '/owner/sql', '🔧', 'SQL'),
+    ('dashboard', '/owner', 'chart',      'Дашборд'),
+    ('orgs', '/owner/orgs', 'building',   'Компании'),
+    ('alerts', '/owner/alerts', 'alert',  'Алерты'),
+    ('tickets', '/owner/tickets', 'ticket', 'Тикеты'),
+    ('audit', '/owner/audit', 'file',     'Аудит'),
+    ('broadcast', '/owner/broadcast', 'megaphone', 'Рассылка'),
+    ('catalog', '/owner/catalog', 'box',  'Каталог'),
+    ('backup', '/owner/backup', 'database', 'Бэкап'),
+    ('health', '/owner/health', 'heartpulse', 'Health'),
+    ('security', '/owner/security', 'lock', 'Безопасность'),
+    ('sql', '/owner/sql', 'terminal',     'SQL'),
 ]
 # Какие 4 главные показываются в нижнем баре, остальные — в "Ещё"
 _OWNER_PRIMARY_TABS = ['dashboard', 'orgs', 'alerts', 'tickets']
@@ -6391,9 +6448,9 @@ def _owner_nav(active):
     primary = set(_OWNER_PRIMARY_TABS)
     # Верхний nav (виден на планшете+ через CSS)
     top = ['<nav class="owner-nav">']
-    for key, url, icon, label in _OWNER_TABS:
+    for key, url, icon_name, label in _OWNER_TABS:
         cls = 'nav-tab active' if key == active else 'nav-tab'
-        top.append(f'<a class="{cls}" href="{url}">{icon} {label}</a>')
+        top.append(f'<a class="{cls}" href="{url}">{_icon(icon_name, 16)} {label}</a>')
     top.append('</nav>')
 
     # Нижний nav (виден на телефоне)
@@ -6403,14 +6460,14 @@ def _owner_nav(active):
         cls = 'btab active' if key == active else 'btab'
         bottom.append(
             f'<a class="{cls}" href="{td[1]}">'
-            f'<span class="bicon">{td[2]}</span>'
+            f'<span class="bicon">{_icon(td[2], 20)}</span>'
             f'<span class="blabel">{td[3]}</span></a>'
         )
     is_more_active = active not in primary
     more_cls = 'btab active' if is_more_active else 'btab'
     bottom.append(
         f'<button class="{more_cls}" type="button" onclick="ownerToggleMore()">'
-        '<span class="bicon">⋯</span><span class="blabel">Ещё</span></button>'
+        f'<span class="bicon">{_icon("menu", 20)}</span><span class="blabel">Ещё</span></button>'
     )
     bottom.append('</nav>')
 
@@ -6421,13 +6478,13 @@ def _owner_nav(active):
              '<div class="more-handle"></div>',
              '<div class="more-title">Ещё</div>',
              '<div class="more-grid">']
-    for key, url, icon, label in _OWNER_TABS:
+    for key, url, icon_name, label in _OWNER_TABS:
         if key in primary:
             continue
         cls = 'mtab active' if key == active else 'mtab'
         sheet.append(
             f'<a class="{cls}" href="{url}">'
-            f'<span class="micon">{icon}</span><span>{label}</span></a>'
+            f'<span class="micon">{_icon(icon_name, 22)}</span><span>{label}</span></a>'
         )
     sheet.append('</div></div></div>')
 
@@ -6691,7 +6748,7 @@ owner_dashboard_html = '''<!DOCTYPE html>
 <div class="blob blob-2"></div>
 
 <header class="owner-header">
-  <div class="brand">📊 <span>Панель владельца</span></div>
+  <div class="brand" style="display:flex;align-items:center;gap:10px;">{{ icon('chart', 22)|safe }} <span>Панель владельца</span></div>
   <div class="right">
     <span class="owner-email">{{ owner_email }}</span>
     <a class="btn-logout" href="/owner/logout">Выйти</a>
@@ -6845,7 +6902,7 @@ owner_orgs_html = '''<!DOCTYPE html>
 <div class="blob blob-2"></div>
 
 <header class="owner-header">
-  <div class="brand">📊 <span>Панель владельца</span></div>
+  <div class="brand" style="display:flex;align-items:center;gap:10px;">{{ icon('chart', 22)|safe }} <span>Панель владельца</span></div>
   <div class="right">
     <span class="owner-email">{{ owner_email }}</span>
     <a class="btn-logout" href="/owner/logout">Выйти</a>
