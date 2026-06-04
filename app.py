@@ -1920,6 +1920,36 @@ def _build_revision_xlsx(rev):
                     # Объединённая ячейка в этом месте — пропускаем тихо
                     pass
 
+        # Убираем из бланка строки товаров, которые НЕ входят в ассортимент этой
+        # локации (не включены в пересчёт). Шаблон содержит весь каталог, но в
+        # отчёт должны попадать только позиции локации. Товарную строку узнаём по
+        # наличию названия (кол. C) и единицы измерения (кол. F) — это отличает её
+        # от шапки и заголовков категорий. Позиции ассортимента остаются, даже
+        # если их не посчитали (пустой остаток).
+        allowed_codes = {p.code for p in products.values() if p.code}
+        allowed_names = {p.name.strip().lower() for p in products.values() if p.name}
+        rows_to_delete = []
+        for row in range(1, ws.max_row + 1):
+            name_cell = ws.cell(row=row, column=3).value
+            unit_cell = ws.cell(row=row, column=6).value
+            if not (name_cell and str(name_cell).strip()):
+                continue
+            if not (unit_cell and str(unit_cell).strip()):
+                continue
+            code_v = ws.cell(row=row, column=2).value
+            code_s = str(code_v).strip() if code_v is not None else ''
+            name_s = str(name_cell).strip().lower()
+            if code_s in allowed_codes or name_s in allowed_names:
+                continue
+            rows_to_delete.append(row)
+        for row in reversed(rows_to_delete):
+            # Снимаем объединения, начинающиеся на удаляемой строке, чтобы
+            # delete_rows не оставил «висящих» merge-диапазонов.
+            for rng in list(ws.merged_cells.ranges):
+                if rng.min_row == row and rng.max_row == row:
+                    ws.unmerge_cells(str(rng))
+            ws.delete_rows(row, 1)
+
         buf = BytesIO()
         wb.save(buf)
         buf.seek(0)
