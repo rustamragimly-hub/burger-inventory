@@ -712,6 +712,35 @@ def admin_panel():
     pending_list = [_rev_info(r) for r in pending_revs]
     completed_list = [_rev_info(r) for r in completed_revs]
 
+    # Схлопываем все ожидающие локации в ОДИН запрос «Ревизия ресторана».
+    # Оператор завершает зоны по одной, но админ должен видеть единый запрос
+    # на завершение всей ревизии — с суммой позиций и списком локаций.
+    if pending_list:
+        _loc_names = []
+        for _r in pending_revs:
+            _l = loc_map.get(_r.location_id)
+            _nm = _l.name if _l else '—'
+            if _nm not in _loc_names:
+                _loc_names.append(_nm)
+        _ops = []
+        for _r in pending_revs:
+            _u = user_map.get(_r.user_id)
+            _un = _u.username if _u else '—'
+            if _un not in _ops:
+                _ops.append(_un)
+        _dates = [r.created_at for r in pending_revs if r.created_at]
+        pending_group = {
+            'confirm_id': pending_revs[0].id,   # confirm закроет все pending разом
+            'locations': _loc_names,
+            'locations_str': ', '.join(_loc_names),
+            'loc_count': len(_loc_names),
+            'operators_str': ', '.join(_ops),
+            'total_items': sum(p['items_count'] for p in pending_list),
+            'created_at': min(_dates).strftime('%d.%m.%Y %H:%M') if _dates else '',
+        }
+    else:
+        pending_group = None
+
     return render_template_string(
         admin_html,
         org=org,
@@ -731,6 +760,7 @@ def admin_panel():
         new_user_pwd=new_user_pwd,
         new_user_name=new_user_name,
         pending_revs=pending_list,
+        pending_group=pending_group,
         completed_revs=completed_list,
     )
 
@@ -2131,6 +2161,28 @@ def admin_revision_reject(rev_id):
         rev.finished_at = None
         db.session.commit()
         flash('Ревизия возвращена на пересчёт. Оператор может продолжить подсчёт.', 'success')
+    except Exception as e:
+        db.session.rollback()
+        flash(f'Ошибка: {e}', 'error')
+    return redirect('/admin#tab-requests')
+
+
+@app.route('/admin/revisions/reject_all', methods=['POST'])
+@admin_required
+def admin_revision_reject_all():
+    """Вернуть на пересчёт ВСЮ ревизию ресторана — все ожидающие локации сразу.
+    Запросы схлопнуты в один, поэтому и возврат единый."""
+    org = _current_org()
+    try:
+        pending = Revision.query.filter_by(org_id=org.id, status='pending').all()
+        for _r in pending:
+            _r.status = 'in_progress'
+            _r.finished_at = None
+        db.session.commit()
+        if pending:
+            flash(f'Ревизия возвращена на пересчёт ({len(pending)} локаций). Операторы могут продолжить.', 'success')
+        else:
+            flash('Нет ожидающих ревизий.', 'error')
     except Exception as e:
         db.session.rollback()
         flash(f'Ошибка: {e}', 'error')
@@ -4336,7 +4388,7 @@ hr.soft { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 
     <a class="drawer-link" data-tab="tab-users" onclick="switchTab('tab-users', true)">{{ icon('users', 18)|safe }} Пользователи</a>
     <a class="drawer-link" data-tab="tab-norms" onclick="switchTab('tab-norms', true)">{{ icon('ruler', 18)|safe }} Нормы</a>
     <a class="drawer-link" data-tab="tab-import" onclick="switchTab('tab-import', true)">{{ icon('download', 18)|safe }} Импорт</a>
-    <a class="drawer-link" data-tab="tab-requests" onclick="switchTab('tab-requests', true)">{{ icon('inbox', 18)|safe }} Запросы{% if pending_revs %} <span class="drawer-badge">{{ pending_revs|length }}</span>{% endif %}</a>
+    <a class="drawer-link" data-tab="tab-requests" onclick="switchTab('tab-requests', true)">{{ icon('inbox', 18)|safe }} Запросы{% if pending_group %} <span class="drawer-badge">1</span>{% endif %}</a>
     <a class="drawer-link" data-tab="tab-history" onclick="switchTab('tab-history', true)">{{ icon('archive', 18)|safe }} История</a>
   </nav>
   <div class="drawer-footer">
@@ -4396,7 +4448,7 @@ hr.soft { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 
     <div class="tab-pill" data-tab="tab-users" onclick="switchTab('tab-users')">{{ icon('users', 16)|safe }} Пользователи</div>
     <div class="tab-pill" data-tab="tab-norms" onclick="switchTab('tab-norms')">{{ icon('ruler', 16)|safe }} Нормы</div>
     <div class="tab-pill" data-tab="tab-import" onclick="switchTab('tab-import')">{{ icon('download', 16)|safe }} Импорт</div>
-    <div class="tab-pill" data-tab="tab-requests" onclick="switchTab('tab-requests')">{{ icon('inbox', 16)|safe }} Запросы{% if pending_revs %} <span style="background:#ef4444;color:white;padding:1px 7px;border-radius:999px;font-size:10px;margin-left:4px;">{{ pending_revs|length }}</span>{% endif %}</div>
+    <div class="tab-pill" data-tab="tab-requests" onclick="switchTab('tab-requests')">{{ icon('inbox', 16)|safe }} Запросы{% if pending_group %} <span style="background:#ef4444;color:white;padding:1px 7px;border-radius:999px;font-size:10px;margin-left:4px;">1</span>{% endif %}</div>
     <div class="tab-pill" data-tab="tab-history" onclick="switchTab('tab-history')">{{ icon('archive', 16)|safe }} История</div>
   </div>
 </div>
@@ -4711,30 +4763,29 @@ hr.soft { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 
   <!-- Tab: Запросы -->
   <div class="tab-content" id="tab-requests">
     <div class="card">
-      <h2>Запросы на подтверждение <span class="count-pill">{{ pending_revs|length }}</span></h2>
-      <div class="tip">{{ icon('alert', 15)|safe }} Подтверждение закрывает ревизию всего ресторана: все ожидающие локации объединяются в один общий бланк (остатки суммируются по локациям), и xlsx скачивается сразу.</div>
-      {% if pending_revs %}
-        {% for r in pending_revs %}
+      <h2>Запросы на подтверждение <span class="count-pill">{{ 1 if pending_group else 0 }}</span></h2>
+      <div class="tip">{{ icon('alert', 15)|safe }} Подтверждение закрывает ревизию всего ресторана: все посчитанные локации объединяются в один общий бланк (остатки суммируются по локациям), и xlsx скачивается сразу.</div>
+      {% if pending_group %}
         <div class="row" style="flex-wrap:wrap;gap:10px;">
           <div style="flex:1;min-width:200px;">
-            <div class="name">📍 {{ r.location }}</div>
-            <div class="meta">Оператор: {{ r.user }} · {{ r.created_at }} · позиций: {{ r.items_count }}</div>
+            <div class="name" style="display:flex;align-items:center;gap:6px;">{{ icon('chart', 16)|safe }} Ревизия ресторана</div>
+            <div class="meta">Локации ({{ pending_group.loc_count }}): {{ pending_group.locations_str }}</div>
+            <div class="meta">Операторы: {{ pending_group.operators_str }} · {{ pending_group.created_at }} · всего позиций: {{ pending_group.total_items }}</div>
           </div>
           <div class="row-actions" style="gap:8px;">
-            <form method="post" action="/admin/revisions/confirm/{{ r.id }}" style="display:inline;" onsubmit="return confirm('Подтвердить ревизию всего ресторана? Все ожидающие локации войдут в один общий отчёт.');">
+            <form method="post" action="/admin/revisions/confirm/{{ pending_group.confirm_id }}" style="display:inline;" onsubmit="return confirm('Завершить ревизию ресторана? Все посчитанные локации войдут в один общий отчёт, остатки суммируются.');">
               <button class="btn btn-primary btn-small" type="submit" style="display:inline-flex;align-items:center;gap:6px;">{{ icon('check', 15)|safe }} Подтвердить и скачать</button>
             </form>
-            <form method="post" action="/admin/revisions/reject/{{ r.id }}" onsubmit="return confirm('Вернуть ревизию на пересчёт? Оператор сможет продолжить подсчёт.');" style="display:inline;">
+            <form method="post" action="/admin/revisions/reject_all" onsubmit="return confirm('Вернуть всю ревизию на пересчёт? Операторы смогут продолжить подсчёт по всем локациям.');" style="display:inline;">
               <button class="btn btn-small" style="background:#f59e0b;color:#fff;" type="submit">↩ На пересчёт</button>
             </form>
           </div>
         </div>
-        {% endfor %}
       {% else %}
         <div class="empty">
-          <div class="empty-icon">📨</div>
+          <div class="empty-icon">{{ icon('inbox', 32)|safe }}</div>
           <div class="empty-title">Нет ожидающих запросов</div>
-          <div class="empty-hint">Здесь появятся ревизии операторов, которые ждут вашего подтверждения.</div>
+          <div class="empty-hint">Здесь появится единый запрос на завершение ревизии, когда операторы посчитают локации.</div>
         </div>
       {% endif %}
     </div>
