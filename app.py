@@ -724,6 +724,39 @@ def admin_panel():
     pending_list = [_rev_info(r) for r in pending_revs]
     completed_list = [_rev_info(r) for r in completed_revs]
 
+    # История: группируем завершённые ревизии в «Ревизию ресторана». Локации,
+    # подтверждённые одним действием, имеют идентичный finished_at — по нему и
+    # группируем. Каждая группа = одна строка истории со списком локаций, общей
+    # суммой позиций и кнопкой скачать общий отчёт.
+    from collections import OrderedDict as _OD
+    _hist_groups = _OD()
+    for r in completed_revs:
+        _key = r.finished_at.strftime('%Y%m%d%H%M%S') if r.finished_at else ('id%d' % r.id)
+        _hist_groups.setdefault(_key, []).append(r)
+    completed_groups = []
+    for _key, _grp in _hist_groups.items():
+        _locn = []
+        for _r in _grp:
+            _l = loc_map.get(_r.location_id)
+            _nm = _l.name if _l else '—'
+            if _nm not in _locn:
+                _locn.append(_nm)
+        _ops = []
+        for _r in _grp:
+            _u = user_map.get(_r.user_id)
+            _un = _u.username if _u else '—'
+            if _un not in _ops:
+                _ops.append(_un)
+        _ref = _grp[0]
+        completed_groups.append({
+            'download_id': _ref.id,
+            'locations_str': ', '.join(_locn),
+            'loc_count': len(_locn),
+            'operators_str': ', '.join(_ops),
+            'finished_at': _ref.finished_at.strftime('%d.%m.%Y %H:%M') if _ref.finished_at else '',
+            'total_items': sum(_items_counts.get(_r.id, 0) for _r in _grp),
+        })
+
     # Схлопываем все ожидающие локации в ОДИН запрос «Ревизия ресторана».
     # Оператор завершает зоны по одной, но админ должен видеть единый запрос
     # на завершение всей ревизии — с суммой позиций и списком локаций.
@@ -774,6 +807,7 @@ def admin_panel():
         pending_revs=pending_list,
         pending_group=pending_group,
         completed_revs=completed_list,
+        completed_groups=completed_groups,
     )
 
 
@@ -2220,6 +2254,32 @@ def admin_revision_download(rev_id):
     loc_name = (loc.name if loc else 'location').replace(' ', '_')
     date_str = (rev.finished_at or rev.created_at or datetime.utcnow()).strftime('%Y%m%d_%H%M')
     fname = f'revision_{loc_name}_{date_str}.xlsx'
+    return send_file(
+        buf, as_attachment=True, download_name=fname,
+        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    )
+
+
+@app.route('/admin/revisions/<int:rev_id>/download_combined')
+@admin_required
+def admin_revision_download_combined(rev_id):
+    """Скачать общий отчёт по ревизии ресторана из истории: все локации,
+    подтверждённые в той же волне (тот же finished_at), суммируются в один
+    бланк — так же, как при первичном подтверждении."""
+    org = _current_org()
+    rev = Revision.query.filter_by(id=rev_id, org_id=org.id, status='completed').first()
+    if not rev:
+        abort(404)
+    if rev.finished_at:
+        group = Revision.query.filter_by(
+            org_id=org.id, status='completed', finished_at=rev.finished_at
+        ).all()
+    else:
+        group = [rev]
+    buf = _build_revision_xlsx(group)
+    date_str = (rev.finished_at or datetime.utcnow()).strftime('%Y%m%d_%H%M')
+    org_slug = (org.name or 'revision').replace(' ', '_').replace('"', '')
+    fname = f'revision_{org_slug}_{date_str}.xlsx'
     return send_file(
         buf, as_attachment=True, download_name=fname,
         mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -4811,16 +4871,17 @@ hr.soft { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 
   <!-- Tab: История -->
   <div class="tab-content" id="tab-history">
     <div class="card">
-      <h2>История ревизий <span class="count-pill">{{ completed_revs|length }}</span></h2>
-      {% if completed_revs %}
-        {% for r in completed_revs %}
+      <h2>История ревизий <span class="count-pill">{{ completed_groups|length }}</span></h2>
+      {% if completed_groups %}
+        {% for g in completed_groups %}
         <div class="row" style="flex-wrap:wrap;gap:10px;">
           <div style="flex:1;min-width:200px;">
-            <div class="name" style="display:flex;align-items:center;gap:6px;">{{ icon('mappin', 15)|safe }} {{ r.location }}</div>
-            <div class="meta">{{ r.user }} · {{ r.finished_at or r.created_at }} · позиций: {{ r.items_count }}</div>
+            <div class="name" style="display:flex;align-items:center;gap:6px;">{{ icon('chart', 15)|safe }} Ревизия ресторана</div>
+            <div class="meta">Локации ({{ g.loc_count }}): {{ g.locations_str }}</div>
+            <div class="meta">{{ g.operators_str }} · {{ g.finished_at }} · всего позиций: {{ g.total_items }}</div>
           </div>
           <div class="row-actions">
-            <a class="btn btn-small" href="/admin/revisions/{{ r.id }}/download" style="display:inline-flex;align-items:center;gap:6px;">{{ icon('download', 14)|safe }} Скачать</a>
+            <a class="btn btn-small" href="/admin/revisions/{{ g.download_id }}/download_combined" style="display:inline-flex;align-items:center;gap:6px;">{{ icon('download', 14)|safe }} Скачать общий</a>
           </div>
         </div>
         {% endfor %}
