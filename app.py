@@ -167,6 +167,18 @@ _ICONS = {
     'terminal':   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>',
     'alert':      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>',
     'arrow-left': '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>',
+    'mail':       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-10 6L2 7"/></svg>',
+    'key':        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="7.5" cy="15.5" r="4.5"/><path d="m10.7 12.3 9.3-9.3M18 5l2 2M15 8l2 2"/></svg>',
+    'user':       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>',
+    'save':       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>',
+    'target':     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>',
+    'help':       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>',
+    'upload':     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>',
+    'bulb':       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4"/><path d="M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.3h6c0-1 .4-1.8 1-2.3A7 7 0 0 0 12 2z"/></svg>',
+    'utensils':   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 2v7a3 3 0 0 0 6 0V2M6 9v13M16 2c-1.5 0-3 1.5-3 4v6h4V2z"/></svg>',
+    'check-circle':'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>',
+    'clipboard':  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/></svg>',
+    'mask':       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M2 9a3 3 0 0 1 3-3h14a3 3 0 0 1 3 3v3a7 7 0 0 1-7 7 4 4 0 0 1-3-1.5A4 4 0 0 1 9 19a7 7 0 0 1-7-7z"/><circle cx="8" cy="11" r="1"/><circle cx="16" cy="11" r="1"/></svg>',
 }
 
 
@@ -3592,7 +3604,7 @@ register_html = '''<!DOCTYPE html>
 <div class="blob blob-2"></div>
 <div class="blob blob-3"></div>
 <div class="card">
-  <div class="icon-box">🚀</div>
+  <div class="icon-box">{{ icon('shop', 30)|safe }}</div>
   <div class="title">Регистрация компании</div>
   <div class="subtitle">14 дней бесплатно, без карты</div>
   {% if error %}<div class="error">{{ error }}</div>{% endif %}
@@ -3647,7 +3659,7 @@ register_success_html = '''<!DOCTYPE html>
 <div class="blob blob-2"></div>
 <div class="blob blob-3"></div>
 <div class="card">
-  <div class="icon-box">📧</div>
+  <div class="icon-box">{{ icon('mail', 30)|safe }}</div>
   <div class="title">Проверьте email</div>
   <div class="subtitle">Мы отправили ссылку для подтверждения на указанный email</div>
   {% if verify_url %}
@@ -3681,7 +3693,7 @@ message_html = '''<!DOCTYPE html>
 <div class="blob blob-2"></div>
 <div class="blob blob-3"></div>
 <div class="card">
-  <div class="icon-box">⚠️</div>
+  <div class="icon-box">{{ icon('alert', 30)|safe }}</div>
   <div class="title">{{ title }}</div>
   <div class="subtitle">{{ text }}</div>
   <div class="bottom-link"><a class="link" href="/login">На главную</a></div>
@@ -3726,7 +3738,7 @@ placeholder_html = '''<!DOCTYPE html>
 <div class="blob blob-2"></div>
 <div class="blob blob-3"></div>
 <div class="card" style="text-align:center;">
-  <div class="icon-box">🏗️</div>
+  <div class="icon-box">{{ icon('alert', 30)|safe }}</div>
   <div class="title">{{ title }}</div>
   <div class="subtitle">Раздел в разработке. Вернитесь позже.</div>
   <div style="text-align:left; margin: 18px 0;">
@@ -3757,7 +3769,7 @@ login_html = '''<!DOCTYPE html>
 <div class="blob blob-2"></div>
 <div class="blob blob-3"></div>
 <div class="card">
-  <div class="icon-box">🏪</div>
+  <div class="icon-box">{{ icon('shop', 30)|safe }}</div>
   <div class="title">Инвентаризация</div>
   <div class="subtitle">Система учёта товаров</div>
   {% if error %}<div class="error">{{ error }}</div>{% endif %}
@@ -4359,7 +4371,7 @@ hr.soft { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 
 
 {% if is_impersonating %}
 <div style="background:linear-gradient(135deg,#a855f7,#7c6cf0);padding:10px 14px;display:flex;align-items:center;justify-content:space-between;font-size:12px;font-weight:600;gap:10px;flex-wrap:wrap;">
-  <span style="flex:1;min-width:200px;line-height:1.35;">🎭 Вы вошли как admin <b>{{ org.name }}</b> от имени владельца. Действия пишутся в аудит.</span>
+  <span style="flex:1;min-width:200px;line-height:1.35;display:inline-flex;align-items:center;gap:6px;">{{ icon('mask', 15)|safe }} Вы вошли как admin <b>{{ org.name }}</b> от имени владельца. Действия пишутся в аудит.</span>
   <a href="/owner/stop_impersonate" style="background:rgba(255,255,255,0.22);color:white;padding:6px 12px;border-radius:8px;text-decoration:none;font-weight:700;white-space:nowrap;font-size:12px;">← В Owner</a>
 </div>
 {% endif %}
@@ -4470,11 +4482,11 @@ hr.soft { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 
 
   {% if new_user_pwd %}
   <div class="pwd-box">
-    🔑 <b>Данные для входа оператора «{{ new_user_name }}»</b>:<br>
-    <div class="cred-row">📧 <span class="cred-label">Email:</span> <code id="cred-email">{{ org.owner_email }}</code> <button type="button" class="copy-btn" onclick="copyCred('cred-email')">📋</button></div>
-    <div class="cred-row">👤 <span class="cred-label">Логин:</span> <code id="cred-login">{{ new_user_name }}</code> <button type="button" class="copy-btn" onclick="copyCred('cred-login')">📋</button></div>
-    <div class="cred-row">🔐 <span class="cred-label">Пароль:</span> <code id="cred-pwd">{{ new_user_pwd }}</code> <button type="button" class="copy-btn" onclick="copyCred('cred-pwd')">📋</button></div>
-    <button type="button" class="btn btn-primary btn-small" onclick="copyAllCreds('{{ org.owner_email }}', '{{ new_user_name }}', '{{ new_user_pwd }}')" style="margin-top:8px;">📋 Скопировать всё</button>
+    <span style="display:inline-flex;align-items:center;gap:6px;">{{ icon('key', 16)|safe }} <b>Данные для входа оператора «{{ new_user_name }}»</b></span><br>
+    <div class="cred-row" style="display:flex;align-items:center;gap:6px;">{{ icon('mail', 15)|safe }} <span class="cred-label">Email:</span> <code id="cred-email">{{ org.owner_email }}</code> <button type="button" class="copy-btn" onclick="copyCred('cred-email')">{{ icon('clipboard', 14)|safe }}</button></div>
+    <div class="cred-row" style="display:flex;align-items:center;gap:6px;">{{ icon('user', 15)|safe }} <span class="cred-label">Логин:</span> <code id="cred-login">{{ new_user_name }}</code> <button type="button" class="copy-btn" onclick="copyCred('cred-login')">{{ icon('clipboard', 14)|safe }}</button></div>
+    <div class="cred-row" style="display:flex;align-items:center;gap:6px;">{{ icon('lock', 15)|safe }} <span class="cred-label">Пароль:</span> <code id="cred-pwd">{{ new_user_pwd }}</code> <button type="button" class="copy-btn" onclick="copyCred('cred-pwd')">{{ icon('clipboard', 14)|safe }}</button></div>
+    <button type="button" class="btn btn-primary btn-small" onclick="copyAllCreds('{{ org.owner_email }}', '{{ new_user_name }}', '{{ new_user_pwd }}')" style="margin-top:8px;display:inline-flex;align-items:center;gap:6px;">{{ icon('clipboard', 14)|safe }} Скопировать всё</button>
     <div style="font-size:11px;color:rgba(255,255,255,0.5);margin-top:6px;">Сохраните сейчас — повторно пароль показан не будет.</div>
   </div>
   {% endif %}
@@ -4488,7 +4500,7 @@ hr.soft { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 
       </div>
       {% if not locations %}
         <div class="empty">
-          <div class="empty-icon">📍</div>
+          <div class="empty-icon">{{ icon('mappin', 32)|safe }}</div>
           <div class="empty-title">Пока нет локаций</div>
           <div class="empty-hint">Добавьте первую локацию ниже — потом выберите её и заполните ассортиментом.</div>
         </div>
@@ -4502,7 +4514,7 @@ hr.soft { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 
         <div class="assort-loc-list">
           {% for loc in locations %}
           <div class="assort-loc-item{% if loop.first %} active{% endif %}" data-loc-id="{{ loc.id }}" onclick="selectAssortLoc({{ loc.id }})">
-            <span class="assort-loc-name">📍 {{ loc.name }}</span>
+            <span class="assort-loc-name" style="display:inline-flex;align-items:center;gap:6px;">{{ icon('mappin', 15)|safe }} {{ loc.name }}</span>
             <span class="assort-loc-actions">
               <span class="assort-loc-count" id="assort-count-{{ loc.id }}">{{ assortment_map.get(loc.id, [])|length }}</span>
               <form method="post" action="/admin/locations/delete/{{ loc.id }}" onsubmit="event.stopPropagation();return confirm('Удалить локацию «{{ loc.name }}»? Все её ревизии и привязки товаров будут удалены.');" style="display:inline;margin:0;">
@@ -4519,7 +4531,7 @@ hr.soft { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 
         {% if not products %}
         <div class="assort-cols">
           <div class="empty">
-            <div class="empty-icon">📦</div>
+            <div class="empty-icon">{{ icon('box', 32)|safe }}</div>
             <div class="empty-title">Сначала добавьте товары</div>
             <div class="empty-hint">Перейдите во вкладку «Товары» и создайте позиции, потом распределите их по локациям.</div>
           </div>
@@ -4527,7 +4539,7 @@ hr.soft { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 
         {% else %}
         <div class="assort-cols">
           <div class="search-bar" style="margin-bottom:10px;">
-            <input class="input" id="assort-search" type="text" placeholder="🔎 Поиск по товарам" oninput="filterAssort()">
+            <input class="input" id="assort-search" type="text" placeholder="Поиск по товарам…" oninput="filterAssort()">
           </div>
           <div class="assort-grid">
             <div class="assort-col">
@@ -4558,7 +4570,7 @@ hr.soft { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 
       {% if categories %}
         {% for cat in categories %}
         <div class="row">
-          <div class="name">🗂 {{ cat.name }}</div>
+          <div class="name" style="display:flex;align-items:center;gap:6px;">{{ icon('folder', 15)|safe }} {{ cat.name }}</div>
           <form method="post" action="/admin/categories/delete/{{ cat.id }}" onsubmit="return confirm('Удалить категорию «{{ cat.name }}»?');">
             <button class="btn btn-danger btn-small" type="submit">Удалить</button>
           </form>
@@ -4566,7 +4578,7 @@ hr.soft { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 
         {% endfor %}
       {% else %}
         <div class="empty">
-          <div class="empty-icon">🗂</div>
+          <div class="empty-icon">{{ icon('folder', 32)|safe }}</div>
           <div class="empty-title">Пока нет категорий</div>
           <div class="empty-hint">Категории помогают группировать товары: «Молочка», «Овощи», «Мясо» и т.д.</div>
         </div>
@@ -4587,7 +4599,7 @@ hr.soft { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 
         <button class="btn btn-primary" onclick="openModal('modal-add-product')">+ Добавить товар</button>
       </div>
       <div class="search-bar">
-        <input class="input" id="product-search" type="text" placeholder="🔎 Поиск по названию или коду" oninput="filterProducts()">
+        <input class="input" id="product-search" type="text" placeholder="Поиск по названию или коду…" oninput="filterProducts()">
       </div>
       {% if products %}
         {% set uncat = grouped.get(None, []) %}
@@ -4630,7 +4642,7 @@ hr.soft { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 
         {% endif %}
       {% else %}
         <div class="empty">
-          <div class="empty-icon">📦</div>
+          <div class="empty-icon">{{ icon('box', 32)|safe }}</div>
           <div class="empty-title">Пока нет товаров</div>
           <div class="empty-hint">Нажмите «+ Добавить товар» или загрузите Excel во вкладке «Импорт».</div>
         </div>
@@ -4688,7 +4700,7 @@ hr.soft { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 
   <div class="tab-content" id="tab-norms">
     <div class="card">
       <h2>Нормы</h2>
-      <div class="tip">💡 Нормы — сколько каждого товара должно быть на каждой локации. Используется для подсветки дефицита в ревизии.</div>
+      <div class="tip" style="display:flex;align-items:flex-start;gap:6px;"><span style="flex-shrink:0;margin-top:1px;">{{ icon('bulb', 15)|safe }}</span> Нормы — сколько каждого товара должно быть на каждой локации. Используется для подсветки дефицита в ревизии.</div>
       {% if products and locations %}
       <div class="norms-table-wrap">
         <table class="norms-table" id="norms-table">
@@ -4715,12 +4727,12 @@ hr.soft { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 
         </table>
       </div>
       <div style="margin-top:14px;display:flex;gap:10px;align-items:center;">
-        <button class="btn btn-primary" onclick="saveNorms()">💾 Сохранить нормы</button>
+        <button class="btn btn-primary" onclick="saveNorms()" style="display:inline-flex;align-items:center;gap:6px;">{{ icon('save', 15)|safe }} Сохранить нормы</button>
         <span id="norms-status" class="meta"></span>
       </div>
       {% else %}
       <div class="empty">
-        <div class="empty-icon">📏</div>
+        <div class="empty-icon">{{ icon('ruler', 32)|safe }}</div>
         <div class="empty-title">Нет данных для норм</div>
         <div class="empty-hint">Сначала добавьте локации и товары — тогда здесь появится таблица для задания норм.</div>
       </div>
@@ -4734,7 +4746,7 @@ hr.soft { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 
       <h2>Импорт товаров</h2>
       <h3>1. Скачайте шаблон</h3>
       <p class="meta" style="margin-bottom:10px;">Excel с колонками: Категория, Название, Код, Ед. изм.</p>
-      <a class="btn" href="/admin/import/template">📥 Скачать шаблон .xlsx</a>
+      <a class="btn" href="/admin/import/template" style="display:inline-flex;align-items:center;gap:6px;">{{ icon('download', 15)|safe }} Скачать шаблон .xlsx</a>
 
       <hr class="soft">
       <h3>2. Загрузите заполненный файл</h3>
@@ -4742,26 +4754,26 @@ hr.soft { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 
         <div class="drop-zone">
           <input type="file" name="file" accept=".xlsx,.csv" required style="color:white;">
         </div>
-        <button class="btn btn-primary" type="submit" style="margin-top:12px;">📤 Загрузить</button>
+        <button class="btn btn-primary" type="submit" style="margin-top:12px;display:inline-flex;align-items:center;gap:6px;">{{ icon('upload', 15)|safe }} Загрузить</button>
       </form>
       <div id="import-result"></div>
     </div>
 
     <div class="card">
-      <h2>🎯 Быстрый старт — готовые наборы</h2>
+      <h2 style="display:flex;align-items:center;gap:8px;">{{ icon('target', 18)|safe }} Быстрый старт — готовые наборы</h2>
       <p class="meta" style="margin-bottom:10px;">Загрузите типовые товары одной кнопкой.</p>
       <div class="preset-grid">
         <form method="post" action="/admin/import/preset/burger" onsubmit="return confirm('Добавить товары набора «Бургерная»?');">
-          <button class="preset-btn" type="submit" style="width:100%;">🍔 Бургерная</button>
+          <button class="preset-btn" type="submit" style="width:100%;display:inline-flex;align-items:center;justify-content:center;gap:6px;">{{ icon('utensils', 15)|safe }} Бургерная</button>
         </form>
         <form method="post" action="/admin/import/preset/coffee" onsubmit="return confirm('Добавить товары набора «Кофейня»?');">
-          <button class="preset-btn" type="submit" style="width:100%;">☕ Кофейня</button>
+          <button class="preset-btn" type="submit" style="width:100%;display:inline-flex;align-items:center;justify-content:center;gap:6px;">{{ icon('utensils', 15)|safe }} Кофейня</button>
         </form>
         <form method="post" action="/admin/import/preset/bakery" onsubmit="return confirm('Добавить товары набора «Пекарня»?');">
-          <button class="preset-btn" type="submit" style="width:100%;">🥐 Пекарня</button>
+          <button class="preset-btn" type="submit" style="width:100%;display:inline-flex;align-items:center;justify-content:center;gap:6px;">{{ icon('utensils', 15)|safe }} Пекарня</button>
         </form>
         <form method="post" action="/admin/import/preset/sushi" onsubmit="return confirm('Добавить товары набора «Суши»?');">
-          <button class="preset-btn" type="submit" style="width:100%;">🍣 Суши</button>
+          <button class="preset-btn" type="submit" style="width:100%;display:inline-flex;align-items:center;justify-content:center;gap:6px;">{{ icon('utensils', 15)|safe }} Суши</button>
         </form>
       </div>
     </div>
@@ -4806,17 +4818,17 @@ hr.soft { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 
         {% for r in completed_revs %}
         <div class="row" style="flex-wrap:wrap;gap:10px;">
           <div style="flex:1;min-width:200px;">
-            <div class="name">📍 {{ r.location }}</div>
+            <div class="name" style="display:flex;align-items:center;gap:6px;">{{ icon('mappin', 15)|safe }} {{ r.location }}</div>
             <div class="meta">{{ r.user }} · {{ r.finished_at or r.created_at }} · позиций: {{ r.items_count }}</div>
           </div>
           <div class="row-actions">
-            <a class="btn btn-small" href="/admin/revisions/{{ r.id }}/download">📥 Скачать</a>
+            <a class="btn btn-small" href="/admin/revisions/{{ r.id }}/download" style="display:inline-flex;align-items:center;gap:6px;">{{ icon('download', 14)|safe }} Скачать</a>
           </div>
         </div>
         {% endfor %}
       {% else %}
         <div class="empty">
-          <div class="empty-icon">🗂</div>
+          <div class="empty-icon">{{ icon('archive', 32)|safe }}</div>
           <div class="empty-title">Нет завершённых ревизий</div>
           <div class="empty-hint">После подтверждения первой ревизии она появится здесь с возможностью скачать Excel-отчёт.</div>
         </div>
@@ -5583,7 +5595,7 @@ header p{font-size:12px;color:rgba(255,255,255,0.4);margin-top:2px;}
 
 {% if not locations %}
   <div class="empty-msg">
-    <span class="ico">📍</span>
+    <span class="ico">{{ icon('mappin', 38)|safe }}</span>
     <div class="ttl">Нет локаций</div>
     <div class="hint">Попросите администратора добавить локации (склад, кухня и т.д.).</div>
   </div>
@@ -5606,12 +5618,12 @@ header p{font-size:12px;color:rgba(255,255,255,0.4);margin-top:2px;}
   </div>
   {% endif %}
   <div class="search-wrap">
-    <input id="search" class="search-input" type="text" placeholder="🔍 Поиск товара..." oninput="filterProducts()">
+    <input id="search" class="search-input" type="text" placeholder="Поиск товара…" oninput="filterProducts()">
   </div>
 
   {% if not grouped %}
     <div class="empty-msg">
-      <span class="ico">📦</span>
+      <span class="ico">{{ icon('box', 38)|safe }}</span>
       <div class="ttl">Нет товаров</div>
       <div class="hint">Добавьте товары в админ-панели или загрузите Excel-файл.</div>
     </div>
@@ -5706,7 +5718,7 @@ header p{font-size:12px;color:rgba(255,255,255,0.4);margin-top:2px;}
 <!-- Confirm finish modal -->
 <div class="modal-center" id="confirmModal">
 <div class="modal-box">
-  <div class="icon">📋</div>
+  <div class="icon">{{ icon('clipboard', 40)|safe }}</div>
   <h2>Завершить ревизию?</h2>
   <p>На проверку уйдут все посчитанные локации одним запросом. После этого добавить позиции будет нельзя, пока админ не подтвердит.</p>
   <div class="modal-btns">
@@ -5719,7 +5731,7 @@ header p{font-size:12px;color:rgba(255,255,255,0.4);margin-top:2px;}
 <!-- Sent modal -->
 <div class="modal-center" id="sentModal">
 <div class="modal-box">
-  <div class="icon">✅</div>
+  <div class="icon" style="color:#34d399;">{{ icon('check-circle', 40)|safe }}</div>
   <h2>Запрос отправлен</h2>
   <p>Ожидайте подтверждения администратором</p>
   <button class="mbtn mbtn-ok" onclick="closeSentModal()">ОК</button>
@@ -5768,7 +5780,7 @@ async function loadHistory(prodId, locId) {
       `<div class="hist-item">
         <span>${h.text}</span>
         <span class="hist-actions">
-          <button class="hist-edit" onclick="editHistItem(${h.id}, ${h.quantity})" title="Изменить">✎</button>
+          <button class="hist-edit" onclick="editHistItem(${h.id}, ${h.quantity})" title="Изменить"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4z"/></svg></button>
           <button class="hist-del" onclick="deleteHistItem(${h.id})" title="Удалить">×</button>
         </span>
       </div>`
@@ -5796,7 +5808,7 @@ function uiConfirm(message) {
     overlay.className = 'modal-center active';
     overlay.innerHTML = `
       <div class="modal-box">
-        <div class="icon">❓</div>
+        <div class="icon"><svg width="38" height="38" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></div>
         <h2>${message}</h2>
         <div class="modal-btns">
           <button class="mbtn mbtn-no">Нет</button>
@@ -5815,7 +5827,7 @@ function uiPrompt(message, defaultVal) {
     overlay.className = 'modal-center active';
     overlay.innerHTML = `
       <div class="modal-box">
-        <div class="icon">✎</div>
+        <div class="icon"><svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4z"/></svg></div>
         <h2>${message}</h2>
         <input class="prompt-input" type="text" inputmode="decimal" value="${defaultVal || ''}">
         <div class="modal-btns">
@@ -6018,7 +6030,7 @@ support_list_html = '''<!DOCTYPE html>
 
 <div class="s-header">
   <div>
-    <div class="name">🎫 Поддержка</div>
+    <div class="name" style="display:flex;align-items:center;gap:6px;">{{ icon('ticket', 16)|safe }} Поддержка</div>
     <div class="sub">{{ org.name }}</div>
   </div>
   <a class="s-back" href="/admin">← В админ-панель</a>
@@ -6038,7 +6050,7 @@ support_list_html = '''<!DOCTYPE html>
     <form method="post">
       <input class="input" type="text" name="subject" placeholder="Тема обращения" required maxlength="300">
       <textarea class="area" name="body" placeholder="Подробное описание..." required></textarea>
-      <button class="btn-primary" type="submit">📨 Отправить</button>
+      <button class="btn-primary" type="submit" style="display:inline-flex;align-items:center;gap:6px;">{{ icon('send', 15)|safe }} Отправить</button>
     </form>
   </div>
 
@@ -6058,7 +6070,7 @@ support_list_html = '''<!DOCTYPE html>
       </div>
     {% else %}
       <div class="empty">
-        <div class="ico">📭</div>
+        <div class="ico">{{ icon('inbox', 34)|safe }}</div>
         Здесь появятся ваши обращения. Создайте первое выше.
       </div>
     {% endif %}
@@ -6082,7 +6094,7 @@ support_view_html = '''<!DOCTYPE html>
 
 <div class="s-header">
   <div>
-    <div class="name">🎫 Тикет #{{ t.id }}</div>
+    <div class="name" style="display:flex;align-items:center;gap:6px;">{{ icon('ticket', 16)|safe }} Тикет #{{ t.id }}</div>
     <div class="sub">{{ org.name }}</div>
   </div>
   <a class="s-back" href="/support">← К списку</a>
@@ -6114,7 +6126,7 @@ support_view_html = '''<!DOCTYPE html>
     <h2>Дополнить</h2>
     <form method="post">
       <textarea class="area" name="body" placeholder="Добавить детали..." required></textarea>
-      <button class="btn-primary" type="submit">💬 Отправить</button>
+      <button class="btn-primary" type="submit" style="display:inline-flex;align-items:center;gap:6px;">{{ icon('send', 15)|safe }} Отправить</button>
     </form>
   </div>
   {% else %}
@@ -7057,7 +7069,7 @@ owner_orgs_html = '''<!DOCTYPE html>
 ''' + _owner_nav('orgs') + '''
 <div class="page-content">
 
-  <input class="search-box" type="text" id="searchBox" placeholder="🔍 Поиск по названию или email..." oninput="filterOrgs(this.value)">
+  <input class="search-box" type="text" id="searchBox" placeholder="Поиск по названию или email…" oninput="filterOrgs(this.value)">
 
   <!-- Desktop table -->
   <div class="glass" style="overflow:hidden;">
