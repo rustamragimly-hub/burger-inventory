@@ -1793,11 +1793,24 @@ def revision_reset():
     if not loc:
         return jsonify({'ok': False, 'error': 'location not found'}), 404
 
+    # Защита: пока ревизия завершена и ждёт реакции админа (pending) — сброс
+    # запрещён, чтобы случайно не стереть отправленные на проверку данные.
+    # Сбросить можно только то, что ещё идёт (in_progress). Если на локации есть
+    # pending — пусть админ сначала примет решение (подтвердить / на пересчёт).
+    pending_here = Revision.query.filter_by(
+        org_id=org.id, location_id=loc.id, status='pending'
+    ).first()
+    if pending_here:
+        return jsonify({
+            'ok': False,
+            'error': 'Ревизия отправлена на проверку. Сначала подтвердите её или верните на пересчёт — только потом можно сбросить.',
+        }), 400
+
     try:
         open_revs = Revision.query.filter(
             Revision.org_id == org.id,
             Revision.location_id == loc.id,
-            Revision.status.in_(['in_progress', 'pending']),
+            Revision.status == 'in_progress',
         ).all()
         items_removed = 0
         for _r in open_revs:
@@ -5836,9 +5849,15 @@ header p{font-size:12px;color:rgba(255,255,255,0.4);margin-top:2px;}
   <button class="finish-btn" onclick="requestFinish()">Завершить ревизию</button>
 {% endif %}
 {% if is_admin and current_rev_id %}
-<button class="reset-btn" onclick="resetRevision()" title="Отменить текущую открытую ревизию и стереть подсчёты на этой локации">
-  <span style="display:inline-flex;align-items:center;gap:7px;">{{ icon('reset', 16)|safe }} Сбросить ревизию</span>
-</button>
+  {% if rev_status == 'pending' %}
+  <button class="reset-btn" disabled title="Ревизия на проверке — сброс заблокирован, чтобы не стереть отправленные данные" style="opacity:0.45;cursor:not-allowed;">
+    <span style="display:inline-flex;align-items:center;gap:7px;">{{ icon('lock', 16)|safe }} Сброс недоступен (на проверке)</span>
+  </button>
+  {% else %}
+  <button class="reset-btn" onclick="resetRevision()" title="Отменить текущую открытую ревизию и стереть подсчёты на этой локации">
+    <span style="display:inline-flex;align-items:center;gap:7px;">{{ icon('reset', 16)|safe }} Сбросить ревизию</span>
+  </button>
+  {% endif %}
 {% endif %}
 {% endif %}
 {% endif %}
