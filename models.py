@@ -38,6 +38,10 @@ class Organization(db.Model):
     # Сумма ежемесячной подписки (для MRR), в рублях
     monthly_price = db.Column(db.Integer, default=0)
 
+    # Часовой пояс компании (IANA, напр. 'Europe/Moscow'). Время в БД хранится
+    # в UTC, а показывается пользователю в этом поясе.
+    timezone = db.Column(db.String(50), default='Europe/Moscow')
+
     # Связи — все данные компании
     users = db.relationship('User', backref='organization', lazy=True, cascade='all, delete-orphan')
     locations = db.relationship('Location', backref='organization', lazy=True, cascade='all, delete-orphan')

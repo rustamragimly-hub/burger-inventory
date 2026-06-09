@@ -179,6 +179,7 @@ _ICONS = {
     'check-circle':'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>',
     'clipboard':  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/></svg>',
     'mask':       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M2 9a3 3 0 0 1 3-3h14a3 3 0 0 1 3 3v3a7 7 0 0 1-7 7 4 4 0 0 1-3-1.5A4 4 0 0 1 9 19a7 7 0 0 1-7-7z"/><circle cx="8" cy="11" r="1"/><circle cx="16" cy="11" r="1"/></svg>',
+    'clock':      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 14"/></svg>',
 }
 
 
@@ -187,6 +188,46 @@ def _icon(name, size=18):
     if not svg:
         return ''
     return svg.replace('<svg ', f'<svg width="{size}" height="{size}" style="vertical-align:-3px;flex-shrink:0;" ', 1)
+
+
+# ── Время: храним в UTC, показываем в часовом поясе компании ──────────
+_TZ_CHOICES = [
+    ('Europe/Kaliningrad', 'Калининград (UTC+2)'),
+    ('Europe/Moscow', 'Москва (UTC+3)'),
+    ('Europe/Samara', 'Самара (UTC+4)'),
+    ('Asia/Yekaterinburg', 'Екатеринбург (UTC+5)'),
+    ('Asia/Omsk', 'Омск (UTC+6)'),
+    ('Asia/Krasnoyarsk', 'Красноярск (UTC+7)'),
+    ('Asia/Irkutsk', 'Иркутск (UTC+8)'),
+    ('Asia/Yakutsk', 'Якутск (UTC+9)'),
+    ('Asia/Vladivostok', 'Владивосток (UTC+10)'),
+    ('Asia/Magadan', 'Магадан (UTC+11)'),
+    ('Asia/Kamchatka', 'Камчатка (UTC+12)'),
+    ('Asia/Almaty', 'Алматы (UTC+5)'),
+    ('Asia/Tashkent', 'Ташкент (UTC+5)'),
+    ('Asia/Bishkek', 'Бишкек (UTC+6)'),
+    ('Asia/Tbilisi', 'Тбилиси (UTC+4)'),
+    ('Asia/Yerevan', 'Ереван (UTC+4)'),
+    ('Asia/Baku', 'Баку (UTC+4)'),
+]
+_TZ_VALID = {c[0] for c in _TZ_CHOICES}
+
+
+def _fmt_dt(dt, org=None, fmt='%d.%m.%Y %H:%M'):
+    """Отформатировать UTC-время в часовом поясе компании (по умолчанию МСК)."""
+    if not dt:
+        return ''
+    from datetime import timezone as _utc
+    try:
+        from zoneinfo import ZoneInfo
+        tzname = (getattr(org, 'timezone', None) or 'Europe/Moscow') if org else 'Europe/Moscow'
+        if tzname not in _TZ_VALID:
+            tzname = 'Europe/Moscow'
+        return dt.replace(tzinfo=_utc.utc).astimezone(ZoneInfo(tzname)).strftime(fmt)
+    except Exception:
+        # Фолбэк: жёсткое смещение МСК (+3), если zoneinfo/tzdata недоступны
+        from datetime import timedelta as _td
+        return (dt + _td(hours=3)).strftime(fmt)
 
 
 @app.context_processor
@@ -716,8 +757,8 @@ def admin_panel():
             'id': r.id,
             'location': loc.name if loc else '—',
             'user': u.username if u else '—',
-            'created_at': r.created_at.strftime('%d.%m.%Y %H:%M') if r.created_at else '',
-            'finished_at': r.finished_at.strftime('%d.%m.%Y %H:%M') if r.finished_at else '',
+            'created_at': _fmt_dt(r.created_at, org),
+            'finished_at': _fmt_dt(r.finished_at, org),
             'items_count': _items_counts.get(r.id, 0),
         }
 
@@ -753,7 +794,7 @@ def admin_panel():
             'locations_str': ', '.join(_locn),
             'loc_count': len(_locn),
             'operators_str': ', '.join(_ops),
-            'finished_at': _ref.finished_at.strftime('%d.%m.%Y %H:%M') if _ref.finished_at else '',
+            'finished_at': _fmt_dt(_ref.finished_at, org),
             'total_items': sum(_items_counts.get(_r.id, 0) for _r in _grp),
         })
 
@@ -781,7 +822,7 @@ def admin_panel():
             'loc_count': len(_loc_names),
             'operators_str': ', '.join(_ops),
             'total_items': sum(p['items_count'] for p in pending_list),
-            'created_at': min(_dates).strftime('%d.%m.%Y %H:%M') if _dates else '',
+            'created_at': _fmt_dt(min(_dates), org) if _dates else '',
         }
     else:
         pending_group = None
@@ -808,6 +849,7 @@ def admin_panel():
         pending_group=pending_group,
         completed_revs=completed_list,
         completed_groups=completed_groups,
+        tz_choices=_TZ_CHOICES,
     )
 
 
@@ -1985,7 +2027,7 @@ def _build_revision_xlsx(revs):
         wb = openpyxl.load_workbook(BytesIO(org.excel_template))
         ws = wb.active
 
-        today_str = (primary.finished_at or datetime.utcnow()).strftime('%d.%m.%Y')
+        today_str = _fmt_dt(primary.finished_at or datetime.utcnow(), org, fmt='%d.%m.%Y')
 
         for row in range(1, ws.max_row + 1):
             for col in range(1, 10):
@@ -2087,7 +2129,7 @@ def _build_revision_xlsx(revs):
     ws['A1'] = 'Бланк инвентаризации'
     ws['A1'].font = Font(bold=True, size=16)
     ws.merge_cells('A1:E1')
-    date_str = (primary.finished_at or primary.created_at or datetime.utcnow()).strftime('%d.%m.%Y %H:%M')
+    date_str = _fmt_dt(primary.finished_at or primary.created_at or datetime.utcnow(), org)
     ws['A3'] = 'Дата:'
     ws['B3'] = date_str
     ws['A4'] = 'Компания:'
@@ -2218,6 +2260,24 @@ def admin_revision_reject(rev_id):
         db.session.rollback()
         flash(f'Ошибка: {e}', 'error')
     return redirect('/admin#tab-requests')
+
+
+@app.route('/admin/settings/timezone', methods=['POST'])
+@admin_required
+def admin_set_timezone():
+    org = _current_org()
+    tz = (request.form.get('timezone') or '').strip()
+    if tz not in _TZ_VALID:
+        flash('Неизвестный часовой пояс.', 'error')
+        return redirect('/admin#tab-locations')
+    try:
+        org.timezone = tz
+        db.session.commit()
+        flash('Часовой пояс сохранён. Время ревизий теперь показывается в нём.', 'success')
+    except Exception as e:
+        db.session.rollback()
+        flash(f'Ошибка: {e}', 'error')
+    return redirect('/admin#tab-locations')
 
 
 @app.route('/admin/revisions/reject_all', methods=['POST'])
@@ -4553,6 +4613,18 @@ hr.soft { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 
 
   <!-- Tab: Локации + ассортимент -->
   <div class="tab-content active" id="tab-locations">
+    <div class="card">
+      <h3 style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">{{ icon('clock', 16)|safe }} Часовой пояс</h3>
+      <div style="font-size:12px;color:rgba(255,255,255,0.55);margin-bottom:10px;">Время ревизий и дата в отчётах показываются в этом поясе.</div>
+      <form method="post" action="/admin/settings/timezone" class="inline-form">
+        <select class="input" name="timezone" style="flex:1;min-width:200px;">
+          {% for val, label in tz_choices %}
+          <option value="{{ val }}" {% if org.timezone == val %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+        <button class="btn btn-primary btn-small" type="submit" style="display:inline-flex;align-items:center;gap:6px;">{{ icon('save', 14)|safe }} Сохранить</button>
+      </form>
+    </div>
     <div class="card">
       <h2>Локации и ассортимент <span class="count-pill">{{ locations|length }}</span></h2>
       <div style="font-size:13px;color:rgba(255,255,255,0.6);margin-bottom:14px;">
@@ -7916,6 +7988,9 @@ with app.app_context():
             ))
             conn.execute(db.text(
                 'ALTER TABLE organizations ADD COLUMN IF NOT EXISTS monthly_price INTEGER DEFAULT 0'
+            ))
+            conn.execute(db.text(
+                "ALTER TABLE organizations ADD COLUMN IF NOT EXISTS timezone VARCHAR(50) DEFAULT 'Europe/Moscow'"
             ))
             # 2FA для owner_users
             conn.execute(db.text(
