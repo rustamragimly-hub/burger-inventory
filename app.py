@@ -1643,33 +1643,40 @@ def revision_add():
 @app.route('/revision/finish', methods=['POST'])
 @login_required_user
 def revision_finish():
+    """Завершить всю ревизию ресторана одним действием: переводим в pending
+    ВСЕ открытые (in_progress) ревизии компании, в которых есть хотя бы одна
+    посчитанная позиция. Локации без подсчётов не трогаем. Так оператор одной
+    кнопкой отправляет на проверку все посчитанные зоны, а админ получает
+    единый запрос «Ревизия ресторана»."""
     org = _current_org()
     if not org:
         return jsonify({'ok': False, 'error': 'no org'}), 400
+
+    open_revs = Revision.query.filter_by(org_id=org.id, status='in_progress').all()
+    if not open_revs:
+        return jsonify({'ok': False, 'error': 'Нет активной ревизии'}), 400
+
+    # Считаем позиции пачкой, чтобы не делать N запросов
+    from sqlalchemy import func as _sa_f
+    _ids = [r.id for r in open_revs]
+    _counts = dict(
+        db.session.query(RevisionItem.revision_id, _sa_f.count(RevisionItem.id))
+        .filter(RevisionItem.revision_id.in_(_ids))
+        .group_by(RevisionItem.revision_id)
+        .all()
+    )
+
+    to_finish = [r for r in open_revs if _counts.get(r.id, 0) > 0]
+    if not to_finish:
+        return jsonify({'ok': False, 'error': 'Ревизия пуста — посчитайте хотя бы одну позицию'}), 400
+
     try:
-        location_id = int(request.form.get('location_id') or request.args.get('location_id') or 0)
-    except (TypeError, ValueError):
-        return jsonify({'ok': False, 'error': 'bad location_id'}), 400
-
-    loc = Location.query.filter_by(id=location_id, org_id=org.id).first()
-    if not loc:
-        return jsonify({'ok': False, 'error': 'location not found'}), 404
-
-    rev = Revision.query.filter_by(
-        org_id=org.id, location_id=loc.id, status='in_progress'
-    ).first()
-    if not rev:
-        return jsonify({'ok': False, 'error': 'Нет активной ревизии на этой локации'}), 400
-
-    cnt = RevisionItem.query.filter_by(revision_id=rev.id).count()
-    if cnt == 0:
-        return jsonify({'ok': False, 'error': 'Ревизия пуста'}), 400
-
-    try:
-        rev.status = 'pending'
-        rev.finished_at = datetime.utcnow()
+        now = datetime.utcnow()
+        for rev in to_finish:
+            rev.status = 'pending'
+            rev.finished_at = now
         db.session.commit()
-        return jsonify({'ok': True})
+        return jsonify({'ok': True, 'locations_finished': len(to_finish)})
     except Exception as e:
         db.session.rollback()
         return jsonify({'ok': False, 'error': str(e)}), 400
@@ -5701,7 +5708,7 @@ header p{font-size:12px;color:rgba(255,255,255,0.4);margin-top:2px;}
 <div class="modal-box">
   <div class="icon">📋</div>
   <h2>Завершить ревизию?</h2>
-  <p>Запрос отправится администратору на подтверждение</p>
+  <p>На проверку уйдут все посчитанные локации одним запросом. После этого добавить позиции будет нельзя, пока админ не подтвердит.</p>
   <div class="modal-btns">
     <button class="mbtn mbtn-no" onclick="cancelFinish()">Нет</button>
     <button class="mbtn mbtn-yes" onclick="confirmFinish()">Да</button>
@@ -5915,8 +5922,17 @@ async function confirmFinish() {
   document.getElementById('confirmModal').classList.remove('active');
   const fd = new FormData();
   fd.append('location_id', {{ selected.id if selected else 0 }});
-  await fetch('/revision/finish', {method:'POST', body:fd});
-  document.getElementById('sentModal').classList.add('active');
+  try {
+    const res = await fetch('/revision/finish', {method:'POST', body:fd});
+    const data = await res.json();
+    if (data.ok) {
+      document.getElementById('sentModal').classList.add('active');
+    } else {
+      alert(data.error || 'Не удалось завершить ревизию');
+    }
+  } catch(e) {
+    alert('Ошибка: ' + e);
+  }
 }
 function closeSentModal() { document.getElementById('sentModal').classList.remove('active'); location.reload(); }
 async function resetRevision() {
