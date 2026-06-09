@@ -4792,9 +4792,7 @@ hr.soft { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 
             <div class="meta">Операторы: {{ pending_group.operators_str }} · {{ pending_group.created_at }} · всего позиций: {{ pending_group.total_items }}</div>
           </div>
           <div class="row-actions" style="gap:8px;">
-            <form method="post" action="/admin/revisions/confirm/{{ pending_group.confirm_id }}" style="display:inline;" onsubmit="return confirm('Завершить ревизию ресторана? Все посчитанные локации войдут в один общий отчёт, остатки суммируются.');">
-              <button class="btn btn-primary btn-small" type="submit" style="display:inline-flex;align-items:center;gap:6px;">{{ icon('check', 15)|safe }} Подтвердить и скачать</button>
-            </form>
+            <button class="btn btn-primary btn-small" id="confirm-rev-btn" onclick="confirmRevision({{ pending_group.confirm_id }})" style="display:inline-flex;align-items:center;gap:6px;">{{ icon('check', 15)|safe }} Подтвердить и скачать</button>
             <form method="post" action="/admin/revisions/reject_all" onsubmit="return confirm('Вернуть всю ревизию на пересчёт? Операторы смогут продолжить подсчёт по всем локациям.');" style="display:inline;">
               <button class="btn btn-small" style="background:#f59e0b;color:#fff;" type="submit">↩ На пересчёт</button>
             </form>
@@ -5330,6 +5328,40 @@ function adminToast(msg, type) {
   document.body.appendChild(t);
   requestAnimationFrame(() => { t.style.opacity = '1'; });
   setTimeout(() => { t.style.opacity = '0'; setTimeout(() => t.remove(), 250); }, 1800);
+}
+
+async function confirmRevision(revId) {
+  if (!confirm('Завершить ревизию ресторана? Все посчитанные локации войдут в один общий отчёт, остатки суммируются.')) return;
+  const btn = document.getElementById('confirm-rev-btn');
+  const orig = btn ? btn.innerHTML : '';
+  if (btn) { btn.disabled = true; btn.textContent = 'Формирование…'; }
+  try {
+    const res = await fetch('/admin/revisions/confirm/' + revId, { method: 'POST' });
+    const ct = res.headers.get('content-type') || '';
+    if (res.ok && ct.indexOf('spreadsheet') !== -1) {
+      // Скачиваем файл программно
+      const blob = await res.blob();
+      let fname = 'revision.xlsx';
+      const cd = res.headers.get('content-disposition') || '';
+      const m = cd.match(/filename\*?=(?:UTF-8'')?["']?([^"';]+)/i);
+      if (m) fname = decodeURIComponent(m[1]);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = fname;
+      document.body.appendChild(a); a.click(); a.remove();
+      URL.revokeObjectURL(url);
+      adminToast('✓ Отчёт сформирован и скачан', 'success');
+      // Обновляем страницу, чтобы Запросы/История отразили изменения
+      setTimeout(() => { window.location.href = '/admin#tab-history'; window.location.reload(); }, 600);
+    } else {
+      // Ошибка — перезагружаем, чтобы показать flash-сообщение
+      window.location.href = '/admin#tab-requests';
+      window.location.reload();
+    }
+  } catch (e) {
+    adminToast('✖ ' + e, 'error');
+    if (btn) { btn.disabled = false; btn.innerHTML = orig; }
+  }
 }
 
 async function copyToClipboard(text) {
