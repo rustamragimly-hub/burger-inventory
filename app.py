@@ -4717,7 +4717,7 @@ hr.soft { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 
   <div class="tab-content" id="tab-products">
     <div class="card">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap;">
-        <h2 style="margin:0;">Товары <span class="count-pill">Всего: {{ products|length }}</span></h2>
+        <h2 style="margin:0;">Товары <span class="count-pill">Всего: <span id="products-count">{{ products|length }}</span></span></h2>
         <button class="btn btn-primary" onclick="openModal('modal-add-product')">+ Добавить товар</button>
       </div>
       <div class="search-bar">
@@ -5561,6 +5561,12 @@ async function deleteProduct(pid, name) {
     if (data.ok) {
       const row = document.getElementById('prod-row-' + pid);
       if (row) row.remove();
+      // Обновляем счётчик «Всего»
+      const cnt = document.getElementById('products-count');
+      if (cnt) {
+        const n = parseInt(cnt.textContent, 10);
+        if (!isNaN(n) && n > 0) cnt.textContent = n - 1;
+      }
       adminToast('✓ ' + (data.msg || ('Товар «' + name + '» удалён')), 'success');
     } else {
       adminToast('✖ ' + (data.error || 'Ошибка'), 'error');
