@@ -4738,7 +4738,7 @@ hr.soft { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 
               </div>
               <div class="row-actions">
                 <button class="btn btn-small" title="Редактировать" onclick='openEditProduct({{ p.id }}, {{ p.name|tojson }}, {{ (p.code or "")|tojson }}, {{ p.unit|tojson }}, {{ (p.category_id or 0) }})'>{{ icon('pencil', 14)|safe }}</button>
-                <button class="btn btn-danger btn-small" onclick="deleteProduct({{ p.id }}, {{ p.name|tojson }}, document.getElementById('prod-row-{{ p.id }}'))">×</button>
+                <button class="btn btn-danger btn-small" onclick='deleteProduct({{ p.id }}, {{ p.name|tojson }})'>×</button>
               </div>
             </div>
             {% endfor %}
@@ -4756,7 +4756,7 @@ hr.soft { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 
             </div>
             <div class="row-actions">
               <button class="btn btn-small" title="Редактировать" onclick='openEditProduct({{ p.id }}, {{ p.name|tojson }}, {{ (p.code or "")|tojson }}, {{ p.unit|tojson }}, 0)'>{{ icon('pencil', 14)|safe }}</button>
-              <button class="btn btn-danger btn-small" onclick="deleteProduct({{ p.id }}, {{ p.name|tojson }}, document.getElementById('prod-row-{{ p.id }}'))">×</button>
+              <button class="btn btn-danger btn-small" onclick='deleteProduct({{ p.id }}, {{ p.name|tojson }})'>×</button>
             </div>
           </div>
           {% endfor %}
@@ -5535,7 +5535,10 @@ async function submitAddProduct(ev) {
       const catSel = document.getElementById('add-prod-cat');
       if (catSel) catSel.name = 'category_id';
       adminToast('✓ ' + data.msg, 'success');
-      setTimeout(() => window.location.href = '/admin#tab-products', 900);
+      // Только смена hash не перезагружает страницу — нужен reload, иначе
+      // новый товар не появится в списке.
+      window.location.hash = 'tab-products';
+      setTimeout(() => window.location.reload(), 600);
     } else {
       adminToast('✖ ' + (data.error || 'Ошибка'), 'error');
     }
@@ -5547,7 +5550,7 @@ async function submitAddProduct(ev) {
   }
 }
 
-async function deleteProduct(pid, name, rowEl) {
+async function deleteProduct(pid, name) {
   if (!confirm('Удалить «' + name + '»?')) return;
   try {
     const res = await fetch('/admin/products/delete/' + pid, {
@@ -5556,7 +5559,8 @@ async function deleteProduct(pid, name, rowEl) {
     });
     const data = await res.json();
     if (data.ok) {
-      if (rowEl) rowEl.remove();
+      const row = document.getElementById('prod-row-' + pid);
+      if (row) row.remove();
       adminToast('✓ ' + (data.msg || ('Товар «' + name + '» удалён')), 'success');
     } else {
       adminToast('✖ ' + (data.error || 'Ошибка'), 'error');
