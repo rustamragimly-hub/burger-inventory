@@ -2016,31 +2016,67 @@ def _build_revision_xlsx(revs):
                     # Объединённая ячейка в этом месте — пропускаем тихо
                     pass
 
-        # Убираем из бланка строки товаров, которые НЕ входят в ассортимент этой
-        # локации (не включены в пересчёт). Шаблон содержит весь каталог, но в
-        # отчёт должны попадать только позиции локации. Товарную строку узнаём по
-        # наличию названия (кол. C) и единицы измерения (кол. F) — это отличает её
-        # от шапки и заголовков категорий. Позиции ассортимента остаются, даже
-        # если их не посчитали (пустой остаток).
+        # Постобработка бланка:
+        #  • убираем строки товаров не из ассортимента локации;
+        #  • убираем целые категории, в которых ни один товар не посчитан;
+        #  • снимаем фоновую заливку с заголовков категорий.
         allowed_codes = {p.code for p in products.values() if p.code}
         allowed_names = {p.name.strip().lower() for p in products.values() if p.name}
-        rows_to_delete = []
-        for row in range(1, ws.max_row + 1):
-            name_cell = ws.cell(row=row, column=3).value
-            unit_cell = ws.cell(row=row, column=6).value
-            if not (name_cell and str(name_cell).strip()):
-                continue
-            if not (unit_cell and str(unit_cell).strip()):
-                continue
-            code_v = ws.cell(row=row, column=2).value
-            code_s = str(code_v).strip() if code_v is not None else ''
-            name_s = str(name_cell).strip().lower()
-            if code_s in allowed_codes or name_s in allowed_names:
-                continue
-            rows_to_delete.append(row)
-        for row in reversed(rows_to_delete):
-            # Снимаем объединения, начинающиеся на удаляемой строке, чтобы
-            # delete_rows не оставил «висящих» merge-диапазонов.
+        _meta_prefixes = (
+            'бланк', 'на дату', 'дата печати', 'подразделения', 'товарные группы',
+            'валюта', 'способ группировки', 'ответственное', 'организация',
+        )
+
+        def _cell_s(row, col):
+            v = ws.cell(row=row, column=col).value
+            return str(v).strip() if v is not None else ''
+
+        def _is_category_row(row):
+            b, c, f = _cell_s(row, 2), _cell_s(row, 3), _cell_s(row, 6)
+            if not b or c or f:
+                return False
+            bl = b.lower()
+            if bl in ('товар', 'код'):
+                return False
+            return not any(bl.startswith(p) for p in _meta_prefixes)
+
+        def _is_product_row(row):
+            return bool(_cell_s(row, 3) and _cell_s(row, 6))
+
+        def _row_qty(row):
+            code_s = _cell_s(row, 2)
+            name_s = _cell_s(row, 3).lower()
+            return agg_by_code.get(code_s) or agg_by_name.get(name_s) or 0
+
+        def _in_assortment(row):
+            return _cell_s(row, 2) in allowed_codes or _cell_s(row, 3).lower() in allowed_names
+
+        max_r = ws.max_row
+        cat_rows = [r for r in range(1, max_r + 1) if _is_category_row(r)]
+        rows_to_delete = set()
+        for idx, crow in enumerate(cat_rows):
+            next_cat = cat_rows[idx + 1] if idx + 1 < len(cat_rows) else max_r + 1
+            block_products = [r for r in range(crow + 1, next_cat) if _is_product_row(r)]
+            counted_any = False
+            for pr in block_products:
+                if not _in_assortment(pr):
+                    rows_to_delete.add(pr)
+                elif _row_qty(pr) > 0:
+                    counted_any = True
+            # Категория без единого посчитанного товара — убираем целиком.
+            if not counted_any:
+                rows_to_delete.add(crow)
+                for pr in block_products:
+                    rows_to_delete.add(pr)
+
+        # Снимаем заливку с оставшихся заголовков категорий (бежевый фон).
+        _no_fill = PatternFill(fill_type=None)
+        for crow in cat_rows:
+            if crow not in rows_to_delete:
+                for col in range(1, 9):
+                    ws.cell(row=crow, column=col).fill = _no_fill
+
+        for row in sorted(rows_to_delete, reverse=True):
             for rng in list(ws.merged_cells.ranges):
                 if rng.min_row == row and rng.max_row == row:
                     ws.unmerge_cells(str(rng))
@@ -2073,7 +2109,6 @@ def _build_revision_xlsx(revs):
 
     bold = Font(bold=True)
     header_fill = PatternFill('solid', fgColor='7C6CF0')
-    cat_fill = PatternFill('solid', fgColor='EDE9FE')
     thin = Side(border_style='thin', color='CCCCCC')
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
 
@@ -2102,13 +2137,16 @@ def _build_revision_xlsx(revs):
 
     r = header_row + 1
     for cat_name in sorted(grouped.keys()):
-        # Строка-заголовок категории
+        cat_items = grouped[cat_name]
+        # Категории без единого посчитанного товара в отчёт не выводим.
+        if not any(i['qty'] for i in cat_items.values()):
+            continue
+        # Строка-заголовок категории (без фоновой заливки)
         cc = ws.cell(row=r, column=1, value=cat_name)
         cc.font = bold
-        cc.fill = cat_fill
         ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=5)
         r += 1
-        for _pid, info in sorted(grouped[cat_name].items(), key=lambda kv: kv[1]['name']):
+        for _pid, info in sorted(cat_items.items(), key=lambda kv: kv[1]['name']):
             ws.cell(row=r, column=1, value=info['code']).border = border
             ws.cell(row=r, column=2, value=info['name']).border = border
             ws.cell(row=r, column=3, value=info['unit']).border = border
