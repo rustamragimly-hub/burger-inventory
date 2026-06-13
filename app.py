@@ -3229,26 +3229,43 @@ def owner_delete_org(org_id):
     try:
         log_owner_action('delete_org', target_org_id=org.id, details=f'name={name}, email={org.owner_email}')
         # Audit-лог сохраняем, но обнуляем ссылку на удаляемую org, иначе ForeignKey блокирует delete
-        OwnerAuditLog.query.filter_by(target_org_id=org.id).update({'target_org_id': None})
+        OwnerAuditLog.query.filter_by(target_org_id=org.id).update({'target_org_id': None}, synchronize_session=False)
 
-        # Явно чистим таблицы, которые ссылаются на locations/products, но не
-        # имеют cascade от Organization (LocationProduct — новая таблица
-        # ассортимента; ProductNorm и RevisionItem — на всякий случай), иначе
-        # FK location_products_location_id_fkey блокирует удаление локаций.
-        loc_ids = [l.id for l in Location.query.filter_by(org_id=org.id).all()]
-        prod_ids = [p.id for p in Product.query.filter_by(org_id=org.id).all()]
-        rev_ids = [r.id for r in Revision.query.filter_by(org_id=org.id).all()]
+        # Полностью ручное удаление в строгом порядке «листья → корень».
+        # Не полагаемся на ORM-cascade: он не покрывает LocationProduct и не
+        # гарантирует порядок, из-за чего FK (revision_items_location_id_fkey,
+        # location_products_*, и т.п.) блокируют удаление.
+        org_id_val = org.id
+        loc_ids = [l.id for l in Location.query.filter_by(org_id=org_id_val).all()]
+        prod_ids = [p.id for p in Product.query.filter_by(org_id=org_id_val).all()]
+        ticket_ids = [t.id for t in SupportTicket.query.filter_by(org_id=org_id_val).all()]
+
+        D = lambda q: q.delete(synchronize_session=False)
+        # тикеты поддержки
+        if ticket_ids:
+            D(SupportTicketReply.query.filter(SupportTicketReply.ticket_id.in_(ticket_ids)))
+        D(SupportTicket.query.filter_by(org_id=org_id_val))
+        # позиции ревизий → ревизии (по org покрывает все позиции этих ревизий)
+        rev_ids = [r.id for r in Revision.query.filter_by(org_id=org_id_val).all()]
         if rev_ids:
-            RevisionItem.query.filter(RevisionItem.revision_id.in_(rev_ids)).delete(synchronize_session=False)
+            D(RevisionItem.query.filter(RevisionItem.revision_id.in_(rev_ids)))
+        D(Revision.query.filter_by(org_id=org_id_val))
+        # ассортимент и нормы (ссылаются на locations и products)
         if loc_ids:
-            LocationProduct.query.filter(LocationProduct.location_id.in_(loc_ids)).delete(synchronize_session=False)
-            ProductNorm.query.filter(ProductNorm.location_id.in_(loc_ids)).delete(synchronize_session=False)
+            D(LocationProduct.query.filter(LocationProduct.location_id.in_(loc_ids)))
+            D(ProductNorm.query.filter(ProductNorm.location_id.in_(loc_ids)))
         if prod_ids:
-            LocationProduct.query.filter(LocationProduct.product_id.in_(prod_ids)).delete(synchronize_session=False)
-            ProductNorm.query.filter(ProductNorm.product_id.in_(prod_ids)).delete(synchronize_session=False)
+            D(LocationProduct.query.filter(LocationProduct.product_id.in_(prod_ids)))
+            D(ProductNorm.query.filter(ProductNorm.product_id.in_(prod_ids)))
+        # справочники компании
+        D(Product.query.filter_by(org_id=org_id_val))
+        D(Category.query.filter_by(org_id=org_id_val))
+        D(Location.query.filter_by(org_id=org_id_val))
+        D(User.query.filter_by(org_id=org_id_val))
         db.session.flush()
-
-        db.session.delete(org)
+        # очищаем identity map, чтобы ORM не пытался каскадить уже удалённое
+        db.session.expire_all()
+        D(Organization.query.filter_by(id=org_id_val))
         db.session.commit()
         flash(f'Компания «{name}» и все её данные удалены.', 'success')
     except Exception as e:
