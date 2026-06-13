@@ -3245,11 +3245,22 @@ def owner_delete_org(org_id):
         if ticket_ids:
             D(SupportTicketReply.query.filter(SupportTicketReply.ticket_id.in_(ticket_ids)))
         D(SupportTicket.query.filter_by(org_id=org_id_val))
-        # позиции ревизий → ревизии (по org покрывает все позиции этих ревизий)
-        rev_ids = [r.id for r in Revision.query.filter_by(org_id=org_id_val).all()]
+        # Ревизии: собираем по org_id И по локациям/товарам компании — на случай
+        # осиротевших или кросс-орг ссылок (наследие старых багов). Сначала
+        # удаляем все их позиции, затем сами ревизии.
+        rev_filters = [Revision.org_id == org_id_val]
+        if loc_ids:
+            rev_filters.append(Revision.location_id.in_(loc_ids))
+        rev_ids = [r.id for r in Revision.query.filter(db.or_(*rev_filters)).all()]
         if rev_ids:
             D(RevisionItem.query.filter(RevisionItem.revision_id.in_(rev_ids)))
-        D(Revision.query.filter_by(org_id=org_id_val))
+        # Подчищаем позиции, напрямую ссылающиеся на локации/товары компании
+        if loc_ids:
+            D(RevisionItem.query.filter(RevisionItem.location_id.in_(loc_ids)))
+        if prod_ids:
+            D(RevisionItem.query.filter(RevisionItem.product_id.in_(prod_ids)))
+        if rev_ids:
+            D(Revision.query.filter(Revision.id.in_(rev_ids)))
         # ассортимент и нормы (ссылаются на locations и products)
         if loc_ids:
             D(LocationProduct.query.filter(LocationProduct.location_id.in_(loc_ids)))
