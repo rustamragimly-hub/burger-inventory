@@ -3230,6 +3230,24 @@ def owner_delete_org(org_id):
         log_owner_action('delete_org', target_org_id=org.id, details=f'name={name}, email={org.owner_email}')
         # Audit-лог сохраняем, но обнуляем ссылку на удаляемую org, иначе ForeignKey блокирует delete
         OwnerAuditLog.query.filter_by(target_org_id=org.id).update({'target_org_id': None})
+
+        # Явно чистим таблицы, которые ссылаются на locations/products, но не
+        # имеют cascade от Organization (LocationProduct — новая таблица
+        # ассортимента; ProductNorm и RevisionItem — на всякий случай), иначе
+        # FK location_products_location_id_fkey блокирует удаление локаций.
+        loc_ids = [l.id for l in Location.query.filter_by(org_id=org.id).all()]
+        prod_ids = [p.id for p in Product.query.filter_by(org_id=org.id).all()]
+        rev_ids = [r.id for r in Revision.query.filter_by(org_id=org.id).all()]
+        if rev_ids:
+            RevisionItem.query.filter(RevisionItem.revision_id.in_(rev_ids)).delete(synchronize_session=False)
+        if loc_ids:
+            LocationProduct.query.filter(LocationProduct.location_id.in_(loc_ids)).delete(synchronize_session=False)
+            ProductNorm.query.filter(ProductNorm.location_id.in_(loc_ids)).delete(synchronize_session=False)
+        if prod_ids:
+            LocationProduct.query.filter(LocationProduct.product_id.in_(prod_ids)).delete(synchronize_session=False)
+            ProductNorm.query.filter(ProductNorm.product_id.in_(prod_ids)).delete(synchronize_session=False)
+        db.session.flush()
+
         db.session.delete(org)
         db.session.commit()
         flash(f'Компания «{name}» и все её данные удалены.', 'success')
