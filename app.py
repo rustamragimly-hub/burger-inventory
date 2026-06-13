@@ -392,6 +392,9 @@ def register():
         password = request.form.get('password') or ''
         password2 = request.form.get('password2') or ''
         terms = request.form.get('terms')
+        pos_system = (request.form.get('pos_system') or '').strip().lower()
+        if pos_system not in ('iiko', 'rkeeper', '1c', 'excel', 'other'):
+            pos_system = None
 
         if not (company and email and username and password):
             error = 'Заполните все поля.'
@@ -414,6 +417,7 @@ def register():
                     email_verify_token=token,
                     plan='trial',
                     trial_ends_at=datetime.utcnow() + timedelta(days=Config.TRIAL_DAYS),
+                    pos_system=pos_system,
                 )
                 db.session.add(org)
                 db.session.flush()
@@ -1386,6 +1390,117 @@ def _sanitize_product_name(name):
     return new
 
 
+def _parse_iiko_bank(file_bytes):
+    """Разобрать «Бланк инвентаризации» из iiko.
+
+    iiko выгружает бланк либо как настоящий .xlsx, либо как XML SpreadsheetML
+    с расширением .xls. Поддерживаем оба. Структура: колонка B — код, C —
+    наименование, F — единица измерения; строки-заголовки категорий содержат
+    только текст в колонке B; верхние строки — метаинформация и шапка таблицы.
+
+    Возвращает кортеж (rows, xlsx_bytes):
+      • rows — список dict {Категория, Название, Код, Ед. изм.} для _import_rows;
+      • xlsx_bytes — нормализованный .xlsx-бланк (та же раскладка), который
+        сохраняется как шаблон отчёта и заполняется остатками при ревизии.
+    """
+    import io as _io
+    import xml.etree.ElementTree as _ET
+    from openpyxl import load_workbook as _lw, Workbook as _WB
+    from openpyxl.styles import Font as _F, Alignment as _Al, Border as _Bd, Side as _Sd
+    from openpyxl.utils import get_column_letter as _gcl
+
+    _meta_prefixes = (
+        'бланк', 'на дату', 'дата печати', 'подразделения', 'товарные группы',
+        'валюта', 'способ группировки', 'ответственное', 'организация',
+        'со склада', 'на склад', 'основание', '№ пф',
+    )
+
+    def _is_xml(b):
+        head = b[:200].lstrip()
+        return head[:5] == b'<?xml' or b'spreadsheet' in head.lower()
+
+    # ── 1. Считываем строки как сетку значений ──
+    grid = []  # list[list[str]]
+    if _is_xml(file_bytes):
+        NS = {'ss': 'urn:schemas-microsoft-com:office:spreadsheet'}
+        root = _ET.fromstring(file_bytes)
+        for ws in root.findall('ss:Worksheet', NS):
+            table = ws.find('ss:Table', NS)
+            if table is None:
+                continue
+            for row in table.findall('ss:Row', NS):
+                cells, col = [], 1
+                for cell in row.findall('ss:Cell', NS):
+                    idx = cell.get('{urn:schemas-microsoft-com:office:spreadsheet}Index')
+                    if idx:
+                        col = int(idx)
+                    while len(cells) < col - 1:
+                        cells.append('')
+                    d = cell.find('ss:Data', NS)
+                    cells.append(d.text if d is not None and d.text is not None else '')
+                    col += 1
+                grid.append(cells)
+            break  # только первый лист
+    else:
+        wb = _lw(_io.BytesIO(file_bytes), data_only=True)
+        ws = wb.active
+        for row in ws.iter_rows(values_only=True):
+            grid.append(['' if v is None else str(v) for v in row])
+
+    def _g(r, c):  # 1-based колонка
+        return (r[c - 1].strip() if c - 1 < len(r) and r[c - 1] is not None else '')
+
+    # ── 2. Извлекаем товары по категориям ──
+    rows = []
+    current_cat = None
+    for r in grid:
+        b, c, f = _g(r, 2), _g(r, 3), _g(r, 6)
+        if not b and not c:
+            continue
+        # товарная строка: есть наименование (C) и единица (F)
+        if c and f:
+            rows.append({
+                'Категория': current_cat or '',
+                'Название': c,
+                'Код': b if not b.lower() in ('код',) else '',
+                'Ед. изм.': f,
+            })
+            continue
+        # заголовок категории: только текст в B, без C и F
+        if b and not c and not f:
+            bl = b.lower()
+            if bl in ('товар', 'код'):
+                continue
+            if any(bl.startswith(p) for p in _meta_prefixes):
+                continue
+            current_cat = b
+
+    # ── 3. Нормализуем бланк в .xlsx (для шаблона отчёта) ──
+    if _is_xml(file_bytes):
+        # XML SpreadsheetML openpyxl не читает — пересобираем в чистый .xlsx,
+        # сохраняя ту же раскладку (B=код, C=наим., F=ед., G=остаток).
+        wb2 = _WB()
+        ws2 = wb2.active
+        ws2.title = 'Page1'
+        thin = _Sd(border_style='thin', color='CCCCCC')
+        border = _Bd(left=thin, right=thin, top=thin, bottom=thin)
+        for ri, r in enumerate(grid, start=1):
+            for ci in range(1, 9):
+                val = _g(r, ci)
+                if val:
+                    ws2.cell(row=ri, column=ci, value=val)
+        widths = {1: 4, 2: 10, 3: 48, 6: 10, 7: 18, 8: 14}
+        for col, w in widths.items():
+            ws2.column_dimensions[_gcl(col)].width = w
+        out = _io.BytesIO()
+        wb2.save(out)
+        xlsx_bytes = out.getvalue()
+    else:
+        xlsx_bytes = file_bytes  # уже .xlsx — используем как есть
+
+    return rows, xlsx_bytes
+
+
 def _import_rows(org_id, rows):
     """rows — iterable of dict-like {Категория, Название, Код, Ед. изм.}."""
     added = 0
@@ -1581,6 +1696,45 @@ def admin_import_preset(ptype):
     except Exception as e:
         db.session.rollback()
         flash(f'Ошибка: {e}', 'error')
+    return redirect('/admin#tab-import')
+
+
+@app.route('/admin/iiko/upload', methods=['POST'])
+@admin_required
+def admin_iiko_upload():
+    """Загрузка «Бланка инвентаризации» из iiko одним файлом:
+    1) парсим товары и категории и импортируем их;
+    2) сохраняем нормализованный бланк как шаблон отчёта — при завершении
+       ревизии остатки будут выгружаться в привычный для клиента вид.
+    """
+    org = _current_org()
+    f = request.files.get('file')
+    if not f or not f.filename:
+        flash('Файл не выбран.', 'error')
+        return redirect('/admin#tab-import')
+    fn = f.filename.lower()
+    if not (fn.endswith('.xls') or fn.endswith('.xlsx')):
+        flash('Нужен файл бланка инвентаризации из iiko (.xls или .xlsx).', 'error')
+        return redirect('/admin#tab-import')
+    try:
+        data = f.read()
+        rows, xlsx_bytes = _parse_iiko_bank(data)
+        if not rows:
+            flash('Не удалось распознать товары. Убедитесь, что это «Бланк инвентаризации» из iiko (колонки: код, наименование, ед. изм.).', 'error')
+            return redirect('/admin#tab-import')
+        added, skipped, _errs = _import_rows(org.id, rows)
+        org.excel_template = xlsx_bytes
+        if not org.pos_system:
+            org.pos_system = 'iiko'
+        db.session.commit()
+        flash(
+            f'Бланк iiko загружен: добавлено товаров {added}, пропущено {skipped}. '
+            f'Отчёт теперь выгружается в вашем формате.',
+            'success',
+        )
+    except Exception as e:
+        db.session.rollback()
+        flash(f'Не удалось обработать файл: {e}', 'error')
     return redirect('/admin#tab-import')
 
 
@@ -3645,6 +3799,7 @@ body {
     outline: none;
     box-shadow: 0 0 0 3px rgba(124,108,240,0.2);
 }
+select.input option { background: #1d1635; color: white; }
 .hint { font-size: 11px; color: rgba(255,255,255,0.4); margin-top: 4px; padding-left: 2px; }
 .btn-primary {
     width: 100%;
@@ -3722,6 +3877,18 @@ register_html = '''<!DOCTYPE html>
     <div class="form-group">
       <label>Название компании</label>
       <input class="input" type="text" name="company" required placeholder="ООО Ромашка">
+    </div>
+    <div class="form-group">
+      <label>Учётная система</label>
+      <select class="input" name="pos_system">
+        <option value="">— выберите (необязательно) —</option>
+        <option value="iiko">iiko</option>
+        <option value="rkeeper">R-Keeper / StoreHouse</option>
+        <option value="1c">1С</option>
+        <option value="excel">Только Excel / без системы</option>
+        <option value="other">Другая</option>
+      </select>
+      <div class="hint">Для iiko товары и бланк отчёта загрузятся автоматически из вашей выгрузки</div>
     </div>
     <div class="form-group">
       <label>Email владельца</label>
@@ -4146,6 +4313,15 @@ select.input option { background: #1d1635; color: white; }
   display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
   gap: 10px; margin-top: 10px;
 }
+.syswrap { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+@media (max-width: 720px) { .syswrap { grid-template-columns: 1fr; } }
+.syscol {
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 14px; padding: 16px;
+}
+.syscol.active { border-color: rgba(124,108,240,0.4); background: rgba(124,108,240,0.06); }
+.sysname { font-weight: 700; font-size: 15px; }
 .preset-btn {
   padding: 16px 12px; border-radius: 16px;
   background: rgba(255,255,255,0.05);
@@ -4865,7 +5041,32 @@ hr.soft { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 
   <!-- Tab: Импорт -->
   <div class="tab-content" id="tab-import">
     <div class="card">
-      <h2>Импорт товаров</h2>
+      <h2 style="display:flex;align-items:center;gap:8px;">{{ icon('box', 18)|safe }} Загрузка из вашей системы</h2>
+      <p class="meta" style="margin-bottom:14px;">Загрузите выгрузку из своей учётной системы — товары добавятся автоматически, а отчёт по ревизии будет выгружаться в привычном вам виде.</p>
+
+      <div class="syswrap">
+        <div class="syscol{% if org.pos_system in (none, '', 'iiko') %} active{% endif %}">
+          <div class="sysname">iiko</div>
+          <p class="meta" style="margin:6px 0 10px;">Выгрузите из iiko отчёт <b>«Бланк инвентаризации»</b> (.xls или .xlsx) и загрузите сюда. Товары, коды, единицы и категории импортируются автоматически.</p>
+          <form method="post" action="/admin/iiko/upload" enctype="multipart/form-data"
+                onsubmit="this.querySelector('button').textContent='Обработка…';this.querySelector('button').disabled=true;">
+            <div class="drop-zone">
+              <input type="file" name="file" accept=".xls,.xlsx" required style="color:white;">
+            </div>
+            <button class="btn btn-primary" type="submit" style="margin-top:10px;display:inline-flex;align-items:center;gap:6px;">{{ icon('upload', 15)|safe }} Загрузить бланк iiko</button>
+          </form>
+        </div>
+
+        <div class="syscol">
+          <div class="sysname">R-Keeper / StoreHouse · 1С</div>
+          <p class="meta" style="margin:6px 0 10px;">Прямая загрузка для этих систем скоро будет. Пока выгрузите номенклатуру в <b>Excel</b> и загрузите её ниже как универсальный файл — структура: Категория, Название, Код, Ед. изм.</p>
+          <a class="btn btn-small" href="#import-universal" onclick="document.getElementById('import-universal').scrollIntoView({behavior:'smooth'});return false;" style="display:inline-flex;align-items:center;gap:6px;">{{ icon('arrow-left', 14)|safe }} К загрузке Excel</a>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" id="import-universal">
+      <h2>Универсальный импорт (Excel / CSV)</h2>
       <h3>1. Скачайте шаблон</h3>
       <p class="meta" style="margin-bottom:10px;">Excel с колонками: Категория, Название, Код, Ед. изм.</p>
       <a class="btn" href="/admin/import/template" style="display:inline-flex;align-items:center;gap:6px;">{{ icon('download', 15)|safe }} Скачать шаблон .xlsx</a>
@@ -7970,6 +8171,9 @@ with app.app_context():
             ))
             conn.execute(db.text(
                 "ALTER TABLE organizations ADD COLUMN IF NOT EXISTS timezone VARCHAR(50) DEFAULT 'Europe/Moscow'"
+            ))
+            conn.execute(db.text(
+                "ALTER TABLE organizations ADD COLUMN IF NOT EXISTS pos_system VARCHAR(20)"
             ))
             # 2FA для owner_users
             conn.execute(db.text(

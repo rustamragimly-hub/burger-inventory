@@ -42,6 +42,10 @@ class Organization(db.Model):
     # в UTC, а показывается пользователю в этом поясе.
     timezone = db.Column(db.String(50), default='Europe/Moscow')
 
+    # Учётная система клиента: 'iiko' / 'rkeeper' / '1c' / 'excel' / 'other'.
+    # Определяет, как импортируются товары и в каком формате отдаётся отчёт.
+    pos_system = db.Column(db.String(20), nullable=True)
+
     # Связи — все данные компании
     users = db.relationship('User', backref='organization', lazy=True, cascade='all, delete-orphan')
     locations = db.relationship('Location', backref='organization', lazy=True, cascade='all, delete-orphan')
