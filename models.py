@@ -20,6 +20,10 @@ class Organization(db.Model):
     owner_email = db.Column(db.String(255), nullable=False, unique=True)
     email_verified = db.Column(db.Boolean, default=False)
     email_verify_token = db.Column(db.String(64), nullable=True)
+    # Код подтверждения email (6 цифр) + срок действия и счётчик попыток
+    email_verify_code = db.Column(db.String(6), nullable=True)
+    email_verify_expires = db.Column(db.DateTime, nullable=True)
+    email_verify_attempts = db.Column(db.Integer, default=0)
 
     # Тариф: 'free', 'trial', 'pro', 'business'
     plan = db.Column(db.String(20), default='trial')

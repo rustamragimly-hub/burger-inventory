@@ -446,12 +446,15 @@ def register():
 
         if error is None:
             try:
-                token = secrets.token_urlsafe(32)
+                code = f'{secrets.randbelow(900000) + 100000}'  # 6 цифр
                 org = Organization(
                     name=company,
                     owner_email=email,
                     email_verified=False,
-                    email_verify_token=token,
+                    email_verify_token=secrets.token_urlsafe(32),
+                    email_verify_code=code,
+                    email_verify_expires=datetime.utcnow() + timedelta(minutes=20),
+                    email_verify_attempts=0,
                     plan='trial',
                     trial_ends_at=datetime.utcnow() + timedelta(days=Config.TRIAL_DAYS),
                     pos_system=pos_system,
@@ -473,25 +476,10 @@ def register():
 
                 db.session.commit()
 
-                # Письмо с подтверждением (если SMTP настроен). Ссылка в любом
-                # случае показывается на странице успеха как запасной вариант.
-                verify_link = app.config.get('APP_BASE_URL', '').rstrip('/') + url_for('verify_email', token=token)
-                _send_email(
-                    to=email,
-                    subject='Подтверждение регистрации в Revisi',
-                    html_body=(
-                        f'<p>Здравствуйте!</p>'
-                        f'<p>Вы зарегистрировали компанию «{company}» в Revisi. '
-                        f'Чтобы активировать аккаунт, подтвердите email:</p>'
-                        f'<p><a href="{verify_link}" style="display:inline-block;background:#7c6cf0;'
-                        f'color:#fff;padding:12px 22px;border-radius:10px;text-decoration:none;'
-                        f'font-weight:600;">Подтвердить email</a></p>'
-                        f'<p>Или откройте ссылку: <br>{verify_link}</p>'
-                        f'<p style="color:#888;font-size:13px;">Если вы не регистрировались — просто проигнорируйте письмо.</p>'
-                    ),
-                    text_body=f'Подтвердите регистрацию в Revisi: {verify_link}',
-                )
-                return redirect(url_for('register_success', token=token))
+                sent = _send_verify_code_email(email, company, code)
+                # Запоминаем, какую компанию подтверждаем, в сессии
+                session['pending_verify_org'] = org.id
+                return redirect(url_for('verify_code', shown=('1' if not sent else '0')))
             except Exception as e:
                 db.session.rollback()
                 error = f'Ошибка регистрации: {e}'
@@ -499,15 +487,87 @@ def register():
     return render_template_string(register_html, error=error)
 
 
-@app.route('/register/success')
-def register_success():
-    token = request.args.get('token', '')
-    verify_url = url_for('verify_email', token=token) if token else None
-    return render_template_string(register_success_html, verify_url=verify_url, mail_on=_mail_enabled())
+def _send_verify_code_email(email, company, code):
+    """Отправить письмо с кодом подтверждения. True — если отправлено."""
+    return _send_email(
+        to=email,
+        subject=f'Код подтверждения Revisi: {code}',
+        html_body=(
+            f'<p>Здравствуйте!</p>'
+            f'<p>Ваш код подтверждения для компании «{company}» в Revisi:</p>'
+            f'<p style="font-size:30px;font-weight:700;letter-spacing:6px;color:#7c6cf0;">{code}</p>'
+            f'<p>Введите его на странице регистрации. Код действует 20 минут.</p>'
+            f'<p style="color:#888;font-size:13px;">Если вы не регистрировались — проигнорируйте письмо.</p>'
+        ),
+        text_body=f'Код подтверждения Revisi: {code} (действует 20 минут).',
+    )
+
+
+@app.route('/verify', methods=['GET', 'POST'])
+def verify_code():
+    """Ввод 6-значного кода подтверждения email (компания берётся из сессии)."""
+    org_id = session.get('pending_verify_org')
+    org = db.session.get(Organization, org_id) if org_id else None
+    if not org:
+        return redirect('/register')
+    if org.email_verified:
+        session.pop('pending_verify_org', None)
+        return redirect('/login')
+
+    error = None
+    # Показывать ли код на экране (когда SMTP не настроен) — для теста
+    shown_code = org.email_verify_code if (request.args.get('shown') == '1' and not _mail_enabled()) else None
+
+    if request.method == 'POST':
+        entered = (request.form.get('code') or '').strip()
+        if org.email_verify_attempts is not None and org.email_verify_attempts >= 8:
+            error = 'Слишком много попыток. Запросите новый код.'
+        elif not org.email_verify_code or not org.email_verify_expires or org.email_verify_expires < datetime.utcnow():
+            error = 'Код устарел. Запросите новый.'
+        elif entered != org.email_verify_code:
+            org.email_verify_attempts = (org.email_verify_attempts or 0) + 1
+            db.session.commit()
+            error = 'Неверный код. Проверьте письмо и попробуйте ещё раз.'
+        else:
+            org.email_verified = True
+            org.email_verify_code = None
+            org.email_verify_token = None
+            org.email_verify_expires = None
+            db.session.commit()
+            session.pop('pending_verify_org', None)
+            admin = User.query.filter_by(org_id=org.id, role='admin').first()
+            if admin:
+                login_user(AuthUser(admin, 'user'), remember=True)
+                admin.last_login_at = datetime.utcnow()
+                db.session.commit()
+                return redirect('/admin')
+            return redirect('/login')
+
+    return render_template_string(
+        verify_code_html, error=error, email=org.owner_email,
+        mail_on=_mail_enabled(), shown_code=shown_code,
+    )
+
+
+@app.route('/verify/resend', methods=['POST'])
+def verify_resend():
+    org_id = session.get('pending_verify_org')
+    org = db.session.get(Organization, org_id) if org_id else None
+    if not org or org.email_verified:
+        return redirect('/register')
+    code = f'{secrets.randbelow(900000) + 100000}'
+    org.email_verify_code = code
+    org.email_verify_expires = datetime.utcnow() + timedelta(minutes=20)
+    org.email_verify_attempts = 0
+    db.session.commit()
+    sent = _send_verify_code_email(org.owner_email, org.name, code)
+    return redirect(url_for('verify_code', shown=('1' if not sent else '0')))
 
 
 @app.route('/verify/<token>')
 def verify_email(token):
+    """Подтверждение по ссылке — оставлено для совместимости (если код уйдёт
+    ссылкой). Основной путь — ввод кода на /verify."""
     org = Organization.query.filter_by(email_verify_token=token).first()
     if not org:
         return render_template_string(
@@ -518,6 +578,7 @@ def verify_email(token):
 
     org.email_verified = True
     org.email_verify_token = None
+    org.email_verify_code = None
     db.session.commit()
 
     admin = User.query.filter_by(org_id=org.id, role='admin').first()
@@ -4093,6 +4154,54 @@ register_html = '''<!DOCTYPE html>
   <div class="bottom-link">
     Уже есть аккаунт? <a class="link" href="/login">Войти</a>
   </div>
+</div>
+</body>
+</html>'''
+
+
+verify_code_html = '''<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Подтверждение email — Revisi</title>
+{{ pwa_head|safe }}
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
+<style>''' + _BASE_CSS + '''
+.code-input { letter-spacing: 10px; text-align: center; font-size: 26px; font-weight: 700; }
+</style>
+</head>
+<body>
+<div class="blob blob-1"></div>
+<div class="blob blob-2"></div>
+<div class="blob blob-3"></div>
+<div class="card">
+  <div class="icon-box">{{ icon('mail', 30)|safe }}</div>
+  <div class="title">Подтвердите email</div>
+  {% if mail_on %}
+  <div class="subtitle">Мы отправили 6-значный код на <b>{{ email }}</b>. Введите его ниже.</div>
+  {% else %}
+  <div class="subtitle">Введите 6-значный код подтверждения.</div>
+  {% endif %}
+  {% if shown_code %}
+  <div style="background: rgba(124,108,240,0.12); border: 1px solid rgba(124,108,240,0.3);
+              border-radius: 14px; padding: 14px; margin: 14px 0; font-size: 13px;
+              color: rgba(255,255,255,0.7); text-align: center;">
+    Почта пока не настроена — ваш код: <b style="font-size:20px;letter-spacing:3px;">{{ shown_code }}</b>
+  </div>
+  {% endif %}
+  {% if error %}<div class="error">{{ error }}</div>{% endif %}
+  <form method="post" action="/verify">
+    <div class="form-group">
+      <input class="input code-input" type="text" name="code" inputmode="numeric" pattern="[0-9]*"
+             maxlength="6" required autocomplete="one-time-code" placeholder="______" autofocus>
+    </div>
+    <button class="btn-primary" type="submit">Подтвердить →</button>
+  </form>
+  <form method="post" action="/verify/resend" style="margin-top:12px;">
+    <button type="submit" style="background:none;border:none;color:#a78bfa;cursor:pointer;font-size:13px;">Отправить код повторно</button>
+  </form>
+  <div class="bottom-link"><a class="link" href="/login">Вернуться ко входу</a></div>
 </div>
 </body>
 </html>'''
@@ -8450,6 +8559,15 @@ with app.app_context():
             ))
             conn.execute(db.text(
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token_expires TIMESTAMP"
+            ))
+            conn.execute(db.text(
+                "ALTER TABLE organizations ADD COLUMN IF NOT EXISTS email_verify_code VARCHAR(6)"
+            ))
+            conn.execute(db.text(
+                "ALTER TABLE organizations ADD COLUMN IF NOT EXISTS email_verify_expires TIMESTAMP"
+            ))
+            conn.execute(db.text(
+                "ALTER TABLE organizations ADD COLUMN IF NOT EXISTS email_verify_attempts INTEGER DEFAULT 0"
             ))
             # 2FA для owner_users
             conn.execute(db.text(
