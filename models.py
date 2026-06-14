@@ -79,6 +79,10 @@ class User(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     last_login_at = db.Column(db.DateTime, nullable=True)
 
+    # Сброс пароля по ссылке из письма
+    reset_token = db.Column(db.String(64), nullable=True, index=True)
+    reset_token_expires = db.Column(db.DateTime, nullable=True)
+
     # Логин уникален только в рамках одной компании
     __table_args__ = (
         db.UniqueConstraint('org_id', 'username', name='uq_org_username'),

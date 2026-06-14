@@ -44,6 +44,43 @@ except ImportError:
 db.init_app(app)
 migrate = Migrate(app, db)
 
+# Почта (Flask-Mail). Если SMTP не настроен в env — отправка тихо отключена,
+# а ссылки подтверждения/сброса показываются на экране.
+try:
+    from flask_mail import Mail, Message as MailMessage
+    mail = Mail(app)
+except ImportError:
+    mail = None
+    MailMessage = None
+
+
+def _mail_enabled():
+    return bool(mail and app.config.get('MAIL_USERNAME') and app.config.get('MAIL_PASSWORD'))
+
+
+def _send_email(to, subject, html_body, text_body=None):
+    """Отправить письмо в фоне. Возвращает True, если отправка инициирована,
+    False — если SMTP не настроен (тогда вызывающий код покажет ссылку на экране)."""
+    if not _mail_enabled():
+        return False
+    try:
+        msg = MailMessage(subject=subject, recipients=[to])
+        msg.html = html_body
+        if text_body:
+            msg.body = text_body
+        import threading
+        def _send(app_obj, m):
+            with app_obj.app_context():
+                try:
+                    mail.send(m)
+                except Exception as _e:
+                    print(f'⚠️  Ошибка отправки email на {to}: {_e}')
+        threading.Thread(target=_send, args=(app, msg), daemon=True).start()
+        return True
+    except Exception as e:
+        print(f'⚠️  Не удалось подготовить письмо для {to}: {e}')
+        return False
+
 login_manager = LoginManager(app)
 login_manager.login_view = 'login'
 login_manager.login_message = 'Пожалуйста, войдите для доступа.'
@@ -436,7 +473,24 @@ def register():
 
                 db.session.commit()
 
-                # TODO: отправлять email в продакшне
+                # Письмо с подтверждением (если SMTP настроен). Ссылка в любом
+                # случае показывается на странице успеха как запасной вариант.
+                verify_link = app.config.get('APP_BASE_URL', '').rstrip('/') + url_for('verify_email', token=token)
+                _send_email(
+                    to=email,
+                    subject='Подтверждение регистрации в Revisi',
+                    html_body=(
+                        f'<p>Здравствуйте!</p>'
+                        f'<p>Вы зарегистрировали компанию «{company}» в Revisi. '
+                        f'Чтобы активировать аккаунт, подтвердите email:</p>'
+                        f'<p><a href="{verify_link}" style="display:inline-block;background:#7c6cf0;'
+                        f'color:#fff;padding:12px 22px;border-radius:10px;text-decoration:none;'
+                        f'font-weight:600;">Подтвердить email</a></p>'
+                        f'<p>Или откройте ссылку: <br>{verify_link}</p>'
+                        f'<p style="color:#888;font-size:13px;">Если вы не регистрировались — просто проигнорируйте письмо.</p>'
+                    ),
+                    text_body=f'Подтвердите регистрацию в Revisi: {verify_link}',
+                )
                 return redirect(url_for('register_success', token=token))
             except Exception as e:
                 db.session.rollback()
@@ -449,7 +503,7 @@ def register():
 def register_success():
     token = request.args.get('token', '')
     verify_url = url_for('verify_email', token=token) if token else None
-    return render_template_string(register_success_html, verify_url=verify_url)
+    return render_template_string(register_success_html, verify_url=verify_url, mail_on=_mail_enabled())
 
 
 @app.route('/verify/<token>')
@@ -473,6 +527,83 @@ def verify_email(token):
         db.session.commit()
         return redirect('/admin')
     return redirect('/login')
+
+
+# ============== ВОССТАНОВЛЕНИЕ ПАРОЛЯ ==============
+@app.route('/forgot', methods=['GET', 'POST'])
+def forgot_password():
+    sent = False
+    shown_link = None  # запасной показ ссылки, если SMTP не настроен
+    error = None
+    if request.method == 'POST':
+        email = (request.form.get('email') or '').strip().lower()
+        if not email:
+            error = 'Введите email.'
+        else:
+            # Ищем админа компании с этим email (владелец аккаунта)
+            org = Organization.query.filter_by(owner_email=email).first()
+            user = None
+            if org:
+                user = User.query.filter_by(org_id=org.id, role='admin').first()
+            if not user:
+                # Не раскрываем, есть ли такой email — показываем «отправлено» всегда
+                sent = True
+            else:
+                token = secrets.token_urlsafe(32)
+                user.reset_token = token
+                user.reset_token_expires = datetime.utcnow() + timedelta(hours=2)
+                db.session.commit()
+                reset_link = app.config.get('APP_BASE_URL', '').rstrip('/') + url_for('reset_password', token=token)
+                ok = _send_email(
+                    to=email,
+                    subject='Сброс пароля в Revisi',
+                    html_body=(
+                        f'<p>Вы запросили сброс пароля для аккаунта Revisi.</p>'
+                        f'<p><a href="{reset_link}" style="display:inline-block;background:#7c6cf0;'
+                        f'color:#fff;padding:12px 22px;border-radius:10px;text-decoration:none;'
+                        f'font-weight:600;">Задать новый пароль</a></p>'
+                        f'<p>Или откройте ссылку: <br>{reset_link}</p>'
+                        f'<p style="color:#888;font-size:13px;">Ссылка действует 2 часа. '
+                        f'Если вы не запрашивали сброс — проигнорируйте письмо.</p>'
+                    ),
+                    text_body=f'Сброс пароля в Revisi: {reset_link}',
+                )
+                sent = True
+                if not ok:
+                    shown_link = reset_link  # SMTP выключен — показываем ссылку на экране
+    return render_template_string(forgot_html, sent=sent, error=error, shown_link=shown_link)
+
+
+@app.route('/reset/<token>', methods=['GET', 'POST'])
+def reset_password(token):
+    user = User.query.filter_by(reset_token=token).first()
+    valid = bool(user and user.reset_token_expires and user.reset_token_expires > datetime.utcnow())
+    error = None
+    if not valid:
+        return render_template_string(
+            message_html,
+            title='Ссылка недействительна',
+            text='Ссылка для сброса пароля устарела или уже использована. Запросите сброс заново.',
+        ), 404
+    if request.method == 'POST':
+        password = request.form.get('password') or ''
+        password2 = request.form.get('password2') or ''
+        if len(password) < 6:
+            error = 'Пароль должен быть не короче 6 символов.'
+        elif password != password2:
+            error = 'Пароли не совпадают.'
+        else:
+            user.set_password(password)
+            user.reset_token = None
+            user.reset_token_expires = None
+            db.session.commit()
+            return render_template_string(
+                message_html,
+                title='Пароль изменён',
+                text='Новый пароль сохранён. Теперь войдите с ним.',
+                link_url='/login', link_text='Войти →',
+            )
+    return render_template_string(reset_html, token=token, error=error)
 
 
 # ============== ЛОГИН / ЛОГАУТ ==============
@@ -3984,14 +4115,23 @@ register_success_html = '''<!DOCTYPE html>
 <div class="card">
   <div class="icon-box">{{ icon('mail', 30)|safe }}</div>
   <div class="title">Проверьте email</div>
-  <div class="subtitle">Мы отправили ссылку для подтверждения на указанный email</div>
+  {% if mail_on %}
+  <div class="subtitle">Мы отправили ссылку для подтверждения на указанный email. Откройте письмо и нажмите «Подтвердить».</div>
+  <div style="background: rgba(124,108,240,0.12); border: 1px solid rgba(124,108,240,0.3);
+              border-radius: 14px; padding: 14px; margin: 16px 0; font-size: 12px;
+              color: rgba(255,255,255,0.6); text-align: center;">
+    Не пришло письмо? Проверьте папку «Спам». Если письма нет — подтвердите по ссылке ниже.
+    <div style="margin-top:8px;"><a class="link" href="{{ verify_url }}">Подтвердить вручную →</a></div>
+  </div>
+  {% else %}
+  <div class="subtitle">Подтвердите email, чтобы активировать аккаунт</div>
   {% if verify_url %}
   <div style="background: rgba(124,108,240,0.12); border: 1px solid rgba(124,108,240,0.3);
               border-radius: 14px; padding: 16px; margin: 16px 0; font-size: 13px;
               color: rgba(255,255,255,0.75); text-align: center;">
-    <div style="margin-bottom:10px;color:rgba(255,255,255,0.5);">Dev-режим: SMTP ещё не настроен.</div>
     <a class="link" href="{{ verify_url }}">Подтвердить сейчас →</a>
   </div>
+  {% endif %}
   {% endif %}
   <div class="bottom-link">
     <a class="link" href="/login">Вернуться ко входу</a>
@@ -4019,7 +4159,88 @@ message_html = '''<!DOCTYPE html>
   <div class="icon-box">{{ icon('alert', 30)|safe }}</div>
   <div class="title">{{ title }}</div>
   <div class="subtitle">{{ text }}</div>
+  {% if link_url %}<a class="btn-primary" href="{{ link_url }}" style="display:block;margin-top:16px;text-decoration:none;text-align:center;">{{ link_text or 'Продолжить' }}</a>{% endif %}
   <div class="bottom-link"><a class="link" href="/login">На главную</a></div>
+</div>
+</body>
+</html>'''
+
+
+forgot_html = '''<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Восстановление пароля — Revisi</title>
+{{ pwa_head|safe }}
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
+<style>''' + _BASE_CSS + '''</style>
+</head>
+<body>
+<div class="blob blob-1"></div>
+<div class="blob blob-2"></div>
+<div class="blob blob-3"></div>
+<div class="card">
+  <div class="icon-box">{{ icon('key', 30)|safe }}</div>
+  <div class="title">Восстановление пароля</div>
+  {% if sent %}
+    <div class="subtitle">Если аккаунт с таким email существует, мы отправили на него ссылку для сброса пароля.</div>
+    {% if shown_link %}
+    <div style="background: rgba(124,108,240,0.12); border: 1px solid rgba(124,108,240,0.3);
+                border-radius: 14px; padding: 16px; margin: 16px 0; font-size: 13px;
+                color: rgba(255,255,255,0.75); text-align: center;">
+      <div style="margin-bottom:8px;color:rgba(255,255,255,0.5);">Почта пока не настроена — ссылка для сброса:</div>
+      <a class="link" href="{{ shown_link }}">Задать новый пароль →</a>
+    </div>
+    {% endif %}
+    <div class="bottom-link"><a class="link" href="/login">Вернуться ко входу</a></div>
+  {% else %}
+    <div class="subtitle">Укажите email владельца аккаунта — пришлём ссылку для сброса</div>
+    {% if error %}<div class="error">{{ error }}</div>{% endif %}
+    <form method="post">
+      <div class="form-group">
+        <label>Email владельца</label>
+        <input class="input" type="email" name="email" required placeholder="owner@example.com">
+      </div>
+      <button class="btn-primary" type="submit">Отправить ссылку →</button>
+    </form>
+    <div class="bottom-link"><a class="link" href="/login">Вспомнили пароль? Войти</a></div>
+  {% endif %}
+</div>
+</body>
+</html>'''
+
+
+reset_html = '''<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Новый пароль — Revisi</title>
+{{ pwa_head|safe }}
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
+<style>''' + _BASE_CSS + '''</style>
+</head>
+<body>
+<div class="blob blob-1"></div>
+<div class="blob blob-2"></div>
+<div class="blob blob-3"></div>
+<div class="card">
+  <div class="icon-box">{{ icon('lock', 30)|safe }}</div>
+  <div class="title">Новый пароль</div>
+  <div class="subtitle">Придумайте новый пароль для входа</div>
+  {% if error %}<div class="error">{{ error }}</div>{% endif %}
+  <form method="post" action="/reset/{{ token }}">
+    <div class="form-group">
+      <label>Новый пароль</label>
+      <input class="input" type="password" name="password" required minlength="6" placeholder="Минимум 6 символов">
+    </div>
+    <div class="form-group">
+      <label>Повторите пароль</label>
+      <input class="input" type="password" name="password2" required minlength="6" placeholder="Ещё раз">
+    </div>
+    <button class="btn-primary" type="submit">Сохранить пароль →</button>
+  </form>
 </div>
 </body>
 </html>'''
@@ -4112,6 +4333,9 @@ login_html = '''<!DOCTYPE html>
     </div>
     <button class="btn-primary" type="submit">Войти →</button>
   </form>
+  <div class="bottom-link" style="margin-top:14px;">
+    <a class="link" href="/forgot">Забыли пароль?</a>
+  </div>
   <div class="bottom-link">
     Нет аккаунта? <a class="link" href="/register">Зарегистрировать компанию</a>
   </div>
@@ -8220,6 +8444,12 @@ with app.app_context():
             ))
             conn.execute(db.text(
                 "ALTER TABLE organizations ADD COLUMN IF NOT EXISTS pos_system VARCHAR(20)"
+            ))
+            conn.execute(db.text(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token VARCHAR(64)"
+            ))
+            conn.execute(db.text(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token_expires TIMESTAMP"
             ))
             # 2FA для owner_users
             conn.execute(db.text(

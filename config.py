@@ -47,6 +47,28 @@ class Config:
     # CSRF
     WTF_CSRF_ENABLED = True
 
+    # ── Почта (SMTP) ─────────────────────────────────────────────
+    # Параметры берутся из переменных окружения. По умолчанию — Яндекс
+    # (smtp.yandex.ru:465, SSL). Чтобы включить отправку, задайте на хостинге:
+    #   MAIL_USERNAME = адрес-отправитель (напр. revisi.noreply@yandex.ru)
+    #   MAIL_PASSWORD = пароль приложения Яндекса (НЕ обычный пароль)
+    #   MAIL_DEFAULT_SENDER = что показывать как «От кого» (по умолч. = MAIL_USERNAME)
+    # Если MAIL_USERNAME/PASSWORD не заданы — письма не шлются, а ссылки
+    # подтверждения/сброса показываются прямо на экране (как сейчас).
+    MAIL_SERVER = os.environ.get('MAIL_SERVER', 'smtp.yandex.ru')
+    MAIL_PORT = int(os.environ.get('MAIL_PORT', '465'))
+    MAIL_USE_SSL = os.environ.get('MAIL_USE_SSL', 'true').lower() == 'true'
+    MAIL_USE_TLS = os.environ.get('MAIL_USE_TLS', 'false').lower() == 'true'
+    MAIL_USERNAME = os.environ.get('MAIL_USERNAME') or None
+    MAIL_PASSWORD = os.environ.get('MAIL_PASSWORD') or None
+    MAIL_DEFAULT_SENDER = (
+        os.environ.get('MAIL_DEFAULT_SENDER')
+        or os.environ.get('MAIL_USERNAME')
+        or None
+    )
+    # Базовый URL для ссылок в письмах (если приложение за прокси/доменом)
+    APP_BASE_URL = os.environ.get('APP_BASE_URL', 'https://app.revisi.ru')
+
     # Жёсткий потолок на размер любого uplaod'а (импорт Excel, шаблоны отчётов).
     # Без этого werkzeug примет хоть гигабайт и положит память воркера. 16 МБ хватает
     # с большим запасом — наши прайс-листы максимум сотни КБ, шаблоны единицы МБ.
