@@ -221,6 +221,27 @@ class RevisionItem(db.Model):
     added_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 
+class ExpectedStock(db.Model):
+    """Расчётный остаток из учётной системы (iiko/1С/Excel), загруженный для
+    конкретной ревизии ресторана. Сравнивается с фактом (RevisionItem),
+    чтобы показать расхождения = потери. Привязка к «волне» подтверждения —
+    через anchor_revision_id (id якорной ревизии группы по finished_at).
+    """
+    __tablename__ = 'expected_stock'
+
+    id = db.Column(db.Integer, primary_key=True)
+    org_id = db.Column(db.Integer, db.ForeignKey('organizations.id'), nullable=False, index=True)
+    # Якорная ревизия волны (та, по которой открыли расхождения)
+    anchor_revision_id = db.Column(db.Integer, db.ForeignKey('revisions.id'), nullable=False, index=True)
+    # Сопоставленный товар (если нашёлся по коду/имени) — иначе только code/name
+    product_id = db.Column(db.Integer, db.ForeignKey('products.id'), nullable=True)
+    code = db.Column(db.String(100), nullable=True)
+    name = db.Column(db.String(300), nullable=True)
+    expected_qty = db.Column(db.Float, default=0)
+    cost_price = db.Column(db.Float, nullable=True)  # себестоимость за единицу (для ₽)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+
 # ============== SUPER ADMIN (ВЛАДЕЛЕЦ СИСТЕМЫ) ==============
 class OwnerUser(db.Model):
     """Вы. Отдельная таблица — не смешиваетесь с пользователями компаний."""

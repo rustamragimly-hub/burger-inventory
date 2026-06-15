@@ -27,7 +27,7 @@ from config import Config
 from models import (
     db, Organization, User, Location, OwnerUser, LoginAttempt,
     Category, Product, ProductNorm, LocationProduct, Revision, RevisionItem,
-    OwnerAuditLog, SupportTicket, SupportTicketReply, CatalogProduct,
+    ExpectedStock, OwnerAuditLog, SupportTicket, SupportTicketReply, CatalogProduct,
 )
 
 # ============== ИНИЦИАЛИЗАЦИЯ ==============
@@ -1720,6 +1720,109 @@ def _parse_iiko_bank(file_bytes):
     return rows, xlsx_bytes
 
 
+def _parse_stock_export(file_bytes):
+    """Разобрать выгрузку остатков из учётной системы.
+
+    Поддерживает два формата:
+      • iiko «Бланк инвентаризации»/«Остатки» — код в колонке B, остаток в G;
+      • универсальный Excel с заголовком — колонки «Код», «Остаток»/«Количество»
+        и опционально «Цена»/«Себестоимость».
+
+    Возвращает список dict {code, name, qty, price}.
+    """
+    import io as _io
+    import xml.etree.ElementTree as _ET
+    from openpyxl import load_workbook as _lw
+
+    def _is_xml(b):
+        head = b[:200].lstrip()
+        return head[:5] == b'<?xml' or b'spreadsheet' in head.lower()
+
+    def _num(v):
+        if v is None:
+            return None
+        s = str(v).strip().replace('\xa0', '').replace(' ', '').replace(',', '.')
+        if not s:
+            return None
+        try:
+            return float(s)
+        except ValueError:
+            return None
+
+    grid = []
+    if _is_xml(file_bytes):
+        NS = {'ss': 'urn:schemas-microsoft-com:office:spreadsheet'}
+        root = _ET.fromstring(file_bytes)
+        for ws in root.findall('ss:Worksheet', NS):
+            table = ws.find('ss:Table', NS)
+            if table is None:
+                continue
+            for row in table.findall('ss:Row', NS):
+                cells, col = [], 1
+                for cell in row.findall('ss:Cell', NS):
+                    idx = cell.get('{urn:schemas-microsoft-com:office:spreadsheet}Index')
+                    if idx:
+                        col = int(idx)
+                    while len(cells) < col - 1:
+                        cells.append('')
+                    d = cell.find('ss:Data', NS)
+                    cells.append(d.text if d is not None and d.text is not None else '')
+                    col += 1
+                grid.append(cells)
+            break
+    else:
+        wb = _lw(_io.BytesIO(file_bytes), data_only=True)
+        ws = wb.active
+        for row in ws.iter_rows(values_only=True):
+            grid.append(['' if v is None else v for v in row])
+
+    def cs(r, c):
+        return (str(r[c]).strip() if c < len(r) and r[c] is not None else '')
+
+    # Определяем формат: ищем строку-заголовок с «код» и «остаток/количество»
+    header_row = None
+    col_code = col_qty = col_price = col_name = None
+    for i, r in enumerate(grid[:25]):
+        low = [str(x).strip().lower() for x in r]
+        if any('код' == x or x.startswith('код') for x in low) and any(
+            ('остат' in x or 'кол-во' in x or 'количество' in x) for x in low
+        ):
+            header_row = i
+            for j, x in enumerate(low):
+                if x.startswith('код') and col_code is None:
+                    col_code = j
+                elif ('остат' in x or 'кол-во' in x or 'количество' in x) and col_qty is None:
+                    col_qty = j
+                elif ('цена' in x or 'себестоим' in x or 'стоим' in x) and col_price is None:
+                    col_price = j
+                elif ('наимен' in x or 'товар' in x or 'назв' in x) and col_name is None:
+                    col_name = j
+            break
+
+    out = []
+    if header_row is not None:
+        # Универсальный Excel с заголовком
+        for r in grid[header_row + 1:]:
+            code = cs(r, col_code) if col_code is not None else ''
+            qty = _num(r[col_qty]) if (col_qty is not None and col_qty < len(r)) else None
+            if not code and qty is None:
+                continue
+            price = _num(r[col_price]) if (col_price is not None and col_price < len(r)) else None
+            name = cs(r, col_name) if col_name is not None else ''
+            if qty is None:
+                qty = 0.0
+            out.append({'code': code, 'name': name, 'qty': qty, 'price': price})
+    else:
+        # iiko-бланк: код B(2), наименование C(3), остаток G(7)
+        for r in grid:
+            b = cs(r, 1)
+            c = cs(r, 2)
+            g = _num(r[6]) if len(r) > 6 else None
+            if b and b.isdigit() and g is not None:
+                out.append({'code': b, 'name': c, 'qty': g, 'price': None})
+    return out
+
+
 def _import_rows(org_id, rows):
     """rows — iterable of dict-like {Категория, Название, Код, Ед. изм.}."""
     added = 0
@@ -2706,6 +2809,150 @@ def admin_revision_download_combined(rev_id):
     return send_file(
         buf, as_attachment=True, download_name=fname,
         mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    )
+
+
+def _wave_group(org, rev):
+    """Все завершённые ревизии той же волны подтверждения (по finished_at)."""
+    if rev.finished_at:
+        return Revision.query.filter_by(
+            org_id=org.id, status='completed', finished_at=rev.finished_at
+        ).all()
+    return [rev]
+
+
+def _wave_anchor_id(group):
+    return min(r.id for r in group)
+
+
+@app.route('/admin/revisions/<int:rev_id>/discrepancy/upload', methods=['POST'])
+@admin_required
+def admin_discrepancy_upload(rev_id):
+    """Загрузить выгрузку остатков из учётной системы для ревизии ресторана."""
+    org = _current_org()
+    rev = Revision.query.filter_by(id=rev_id, org_id=org.id, status='completed').first()
+    if not rev:
+        abort(404)
+    f = request.files.get('file')
+    if not f or not f.filename:
+        flash('Файл не выбран.', 'error')
+        return redirect(f'/admin/revisions/{rev_id}/discrepancy')
+    fn = f.filename.lower()
+    if not (fn.endswith('.xls') or fn.endswith('.xlsx')):
+        flash('Нужен файл выгрузки остатков (.xls или .xlsx).', 'error')
+        return redirect(f'/admin/revisions/{rev_id}/discrepancy')
+    try:
+        group = _wave_group(org, rev)
+        anchor = _wave_anchor_id(group)
+        rows = _parse_stock_export(f.read())
+        if not rows:
+            flash('Не удалось распознать остатки. Нужны колонки «Код» и «Остаток» (или бланк iiko с заполненным остатком).', 'error')
+            return redirect(f'/admin/revisions/{rev_id}/discrepancy')
+        # Сопоставляем по коду с товарами компании
+        code_to_pid = {p.code: p.id for p in Product.query.filter_by(org_id=org.id).all() if p.code}
+        # Чистим прежние данные этой волны и пишем новые
+        ExpectedStock.query.filter_by(org_id=org.id, anchor_revision_id=anchor).delete(synchronize_session=False)
+        cnt = 0
+        for r in rows:
+            es = ExpectedStock(
+                org_id=org.id, anchor_revision_id=anchor,
+                product_id=code_to_pid.get(r['code']),
+                code=r['code'] or None, name=r['name'] or None,
+                expected_qty=r['qty'] or 0, cost_price=r['price'],
+            )
+            db.session.add(es)
+            cnt += 1
+        db.session.commit()
+        flash(f'Загружено остатков: {cnt}. Расхождения рассчитаны.', 'success')
+    except Exception as e:
+        db.session.rollback()
+        flash(f'Не удалось обработать файл: {e}', 'error')
+    return redirect(f'/admin/revisions/{rev_id}/discrepancy')
+
+
+@app.route('/admin/revisions/<int:rev_id>/discrepancy')
+@admin_required
+def admin_discrepancy(rev_id):
+    org = _current_org()
+    rev = Revision.query.filter_by(id=rev_id, org_id=org.id, status='completed').first()
+    if not rev:
+        abort(404)
+    group = _wave_group(org, rev)
+    anchor = _wave_anchor_id(group)
+    rev_ids = [r.id for r in group]
+
+    # Факт: сумма посчитанного по product_id во всех ревизиях волны
+    fact_by_pid = {}
+    items = RevisionItem.query.filter(RevisionItem.revision_id.in_(rev_ids)).all()
+    for it in items:
+        fact_by_pid[it.product_id] = fact_by_pid.get(it.product_id, 0) + (it.quantity or 0)
+
+    expected = ExpectedStock.query.filter_by(org_id=org.id, anchor_revision_id=anchor).all()
+    has_data = len(expected) > 0
+
+    # Карта товаров для имён/единиц
+    pids = set(fact_by_pid.keys()) | {e.product_id for e in expected if e.product_id}
+    prods = {p.id: p for p in Product.query.filter(Product.id.in_(pids)).all()} if pids else {}
+
+    # Расчёт по product_id (если сопоставлен) + по коду для несопоставленных
+    exp_by_pid = {}
+    exp_unmatched = []  # есть в остатках, но товара нет в системе
+    for e in expected:
+        if e.product_id:
+            exp_by_pid[e.product_id] = e
+        else:
+            exp_unmatched.append(e)
+
+    rows = []
+    total_short = 0.0   # недостача в ₽ (отрицательная разница)
+    total_surp = 0.0    # излишек в ₽
+    for pid in sorted(pids, key=lambda x: (prods.get(x).name.lower() if prods.get(x) else '')):
+        p = prods.get(pid)
+        fact = round(fact_by_pid.get(pid, 0), 3)
+        e = exp_by_pid.get(pid)
+        exp_qty = round(e.expected_qty, 3) if e else None
+        price = e.cost_price if e else None
+        diff = round(fact - exp_qty, 3) if exp_qty is not None else None
+        diff_rub = (round(diff * price, 2) if (diff is not None and price is not None) else None)
+        if diff_rub is not None:
+            if diff_rub < 0:
+                total_short += diff_rub
+            else:
+                total_surp += diff_rub
+        rows.append({
+            'name': p.name if p else '—',
+            'unit': p.unit if p else '',
+            'code': p.code if p else '',
+            'fact': fact,
+            'expected': exp_qty,
+            'diff': diff,
+            'diff_rub': diff_rub,
+        })
+    # Позиции из остатков, которых нет в системе (товар не сопоставлен)
+    for e in exp_unmatched:
+        rows.append({
+            'name': e.name or '—', 'unit': '', 'code': e.code or '',
+            'fact': None, 'expected': round(e.expected_qty, 3),
+            'diff': None, 'diff_rub': None, 'unmatched': True,
+        })
+
+    loc_names = []
+    for r in group:
+        l = db.session.get(Location, r.location_id) if r.location_id else None
+        nm = l.name if l else '—'
+        if nm not in loc_names:
+            loc_names.append(nm)
+
+    return render_template_string(
+        discrepancy_html,
+        org=org, username=current_user.username,
+        rev_id=rev_id, has_data=has_data,
+        rows=rows,
+        total_short=round(total_short, 2),
+        total_surp=round(total_surp, 2),
+        finished_at=_fmt_dt(rev.finished_at, org),
+        locations_str=', '.join(loc_names),
+        has_prices=any(r.get('diff_rub') is not None for r in rows),
     )
 
 
@@ -4482,6 +4729,135 @@ login_html = '''<!DOCTYPE html>
 
 
 # ============== АДМИН ПАНЕЛЬ ==============
+discrepancy_html = '''<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Расхождения — {{ org.name }}</title>
+{{ pwa_head|safe }}
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { max-width: 100%; overflow-x: hidden; }
+body { font-family: 'Outfit', sans-serif; background: linear-gradient(135deg,#13111C,#1d1635 50%,#231b50); background-attachment: fixed; min-height: 100vh; color: #fff; padding-bottom: 60px; }
+.header { position: sticky; top: 0; z-index: 20; background: rgba(19,17,28,0.78); backdrop-filter: blur(20px); border-bottom: 1px solid rgba(255,255,255,0.08); padding: 14px 20px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.header .name { font-weight: 700; font-size: 16px; }
+.header .sub { font-size: 11px; color: rgba(255,255,255,0.5); text-transform: uppercase; letter-spacing: 0.6px; }
+.back-btn { background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.12); color: #fff; padding: 8px 14px; border-radius: 12px; font-size: 13px; text-decoration: none; }
+.container { max-width: 1080px; width: 100%; margin: 20px auto; padding: 0 16px; }
+.card { background: rgba(255,255,255,0.07); backdrop-filter: blur(20px); border: 1px solid rgba(255,255,255,0.12); border-radius: 20px; padding: 20px; margin-bottom: 16px; }
+.card h2 { font-size: 17px; margin-bottom: 6px; }
+.meta { font-size: 12px; color: rgba(255,255,255,0.55); }
+.flash-box { padding: 12px 14px; border-radius: 12px; margin-bottom: 12px; font-size: 13px; border: 1px solid rgba(255,255,255,0.12); }
+.flash-success { background: rgba(34,197,94,0.14); border-color: rgba(34,197,94,0.3); color: #86efac; }
+.flash-error { background: rgba(239,68,68,0.14); border-color: rgba(239,68,68,0.3); color: #fca5a5; }
+.summary { display: flex; gap: 14px; flex-wrap: wrap; margin: 14px 0; }
+.sum-card { flex: 1; min-width: 180px; padding: 16px; border-radius: 14px; border: 1px solid rgba(255,255,255,0.1); }
+.sum-card .lbl { font-size: 12px; color: rgba(255,255,255,0.6); margin-bottom: 6px; }
+.sum-card .val { font-size: 26px; font-weight: 800; }
+.sum-short { background: rgba(239,68,68,0.1); border-color: rgba(239,68,68,0.3); }
+.sum-short .val { color: #fca5a5; }
+.sum-surp { background: rgba(245,158,11,0.1); border-color: rgba(245,158,11,0.3); }
+.sum-surp .val { color: #fbbf24; }
+.dz { border: 1px dashed rgba(255,255,255,0.18); border-radius: 14px; padding: 16px; background: rgba(255,255,255,0.02); }
+.btn { display: inline-flex; align-items: center; gap: 6px; background: linear-gradient(135deg,#7c6cf0,#a855f7); border: none; color: #fff; padding: 10px 18px; border-radius: 12px; font-family: 'Outfit'; font-weight: 600; font-size: 14px; cursor: pointer; }
+.tbl-wrap { overflow-x: auto; border-radius: 12px; }
+table { width: 100%; border-collapse: collapse; min-width: 640px; font-size: 13px; }
+th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid rgba(255,255,255,0.07); }
+th { background: rgba(255,255,255,0.04); font-weight: 600; color: rgba(255,255,255,0.85); position: sticky; top: 0; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+tr.short td { background: rgba(239,68,68,0.06); }
+tr.surp td { background: rgba(245,158,11,0.05); }
+.neg { color: #fca5a5; font-weight: 600; }
+.pos { color: #fbbf24; font-weight: 600; }
+.muted { color: rgba(255,255,255,0.4); }
+.search { width: 100%; background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.1); border-radius: 12px; color: #fff; padding: 11px 14px; font-family: 'Outfit'; font-size: 14px; margin-bottom: 12px; }
+.tip { font-size: 12px; color: rgba(255,255,255,0.55); margin: 8px 0; }
+.tip a { color: #a78bfa; }
+</style>
+</head>
+<body>
+<div class="header">
+  <div>
+    <div class="name">{{ icon('chart', 16)|safe }} Расхождения по ревизии</div>
+    <div class="sub">{{ org.name }}</div>
+  </div>
+  <a class="back-btn" href="/admin#tab-history">← К истории</a>
+</div>
+<div class="container">
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for category, msg in messages %}
+      <div class="flash-box {% if category == 'error' %}flash-error{% else %}flash-success{% endif %}">{{ msg }}</div>
+    {% endfor %}
+  {% endwith %}
+
+  <div class="card">
+    <h2>Ревизия ресторана</h2>
+    <div class="meta">Локации: {{ locations_str }} · {{ finished_at }}</div>
+    <div class="tip">Загрузите выгрузку остатков из вашей учётной системы (на дату ревизии) — система сравнит расчётный остаток с фактическим и покажет недостачи и излишки. Формат: Excel с колонками «Код», «Остаток» и (необязательно) «Цена»/«Себестоимость», либо бланк iiko с заполненным остатком.</div>
+    <form method="post" action="/admin/revisions/{{ rev_id }}/discrepancy/upload" enctype="multipart/form-data"
+          onsubmit="this.querySelector('button').textContent='Обработка…';this.querySelector('button').disabled=true;">
+      <div class="dz"><input type="file" name="file" accept=".xls,.xlsx" required style="color:#fff;"></div>
+      <button class="btn" type="submit" style="margin-top:10px;">{{ icon('upload', 15)|safe }} {{ 'Обновить остатки' if has_data else 'Загрузить остатки' }}</button>
+    </form>
+  </div>
+
+  {% if has_data %}
+  <div class="card">
+    <div class="summary">
+      <div class="sum-card sum-short">
+        <div class="lbl">Недостача</div>
+        <div class="val">{% if has_prices %}{{ '{:,.0f}'.format(total_short).replace(',', ' ') }} ₽{% else %}—{% endif %}</div>
+      </div>
+      <div class="sum-card sum-surp">
+        <div class="lbl">Излишек</div>
+        <div class="val">{% if has_prices %}+{{ '{:,.0f}'.format(total_surp).replace(',', ' ') }} ₽{% else %}—{% endif %}</div>
+      </div>
+    </div>
+    {% if not has_prices %}
+    <div class="tip">Чтобы видеть расхождения в рублях, добавьте в выгрузку колонку «Цена» или «Себестоимость».</div>
+    {% endif %}
+    <input class="search" id="dsearch" placeholder="Поиск по товару…" oninput="filterRows()">
+    <div class="tbl-wrap">
+      <table id="dtable">
+        <thead>
+          <tr>
+            <th>Товар</th>
+            <th class="num">Расчёт</th>
+            <th class="num">Факт</th>
+            <th class="num">Разница</th>
+            {% if has_prices %}<th class="num">Разница, ₽</th>{% endif %}
+          </tr>
+        </thead>
+        <tbody>
+        {% for r in rows %}
+          <tr class="{% if r.diff is not none and r.diff < 0 %}short{% elif r.diff is not none and r.diff > 0 %}surp{% endif %}" data-name="{{ (r.name or '')|lower }}">
+            <td>{{ r.name }}{% if r.unit %} <span class="muted">· {{ r.unit }}</span>{% endif %}{% if r.unmatched %} <span class="muted">(нет в системе)</span>{% endif %}</td>
+            <td class="num">{% if r.expected is not none %}{{ r.expected }}{% else %}<span class="muted">—</span>{% endif %}</td>
+            <td class="num">{% if r.fact is not none %}{{ r.fact }}{% else %}<span class="muted">—</span>{% endif %}</td>
+            <td class="num">{% if r.diff is not none %}<span class="{% if r.diff < 0 %}neg{% elif r.diff > 0 %}pos{% endif %}">{{ '%+g'|format(r.diff) }}</span>{% else %}<span class="muted">—</span>{% endif %}</td>
+            {% if has_prices %}<td class="num">{% if r.diff_rub is not none %}<span class="{% if r.diff_rub < 0 %}neg{% elif r.diff_rub > 0 %}pos{% endif %}">{{ '%+,.0f'|format(r.diff_rub)|replace(',', ' ') }} ₽</span>{% else %}<span class="muted">—</span>{% endif %}</td>{% endif %}
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% endif %}
+</div>
+<script>
+function filterRows(){
+  var q=(document.getElementById('dsearch').value||'').toLowerCase().trim();
+  document.querySelectorAll('#dtable tbody tr').forEach(function(tr){
+    tr.style.display=(!q||(tr.dataset.name||'').includes(q))?'':'none';
+  });
+}
+</script>
+</body>
+</html>'''
+
+
 admin_html = '''<!DOCTYPE html>
 <html lang="ru">
 <head>
@@ -5549,7 +5925,8 @@ hr.soft { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 
             <div class="meta">Локации ({{ g.loc_count }}): {{ g.locations_str }}</div>
             <div class="meta">{{ g.operators_str }} · {{ g.finished_at }} · всего позиций: {{ g.total_items }}</div>
           </div>
-          <div class="row-actions">
+          <div class="row-actions" style="gap:8px;">
+            <a class="btn btn-small" href="/admin/revisions/{{ g.download_id }}/discrepancy" style="display:inline-flex;align-items:center;gap:6px;background:rgba(124,108,240,0.18);border-color:rgba(124,108,240,0.4);color:#c4b5fd;">{{ icon('chart', 14)|safe }} Расхождения</a>
             <a class="btn btn-small" href="/admin/revisions/{{ g.download_id }}/download_combined" style="display:inline-flex;align-items:center;gap:6px;">{{ icon('download', 14)|safe }} Скачать общий</a>
           </div>
         </div>
