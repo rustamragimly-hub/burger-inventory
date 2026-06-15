@@ -134,23 +134,30 @@ def route_by_host():
 
     if host in LANDING_HOSTS:
         if request.path == '/':
-            from flask import send_from_directory
-            return send_from_directory('static/landing', 'index.html')
+            return _serve_landing_html('index.html')
         new_url = f'https://{APP_HOST}{request.full_path.rstrip("?")}'
         return redirect(new_url, code=301)
 
     return None
 
 
+def _serve_landing_html(fname):
+    """Отдать HTML лендинга/юр-страниц с коротким кэшем, чтобы правки
+    подхватывались сразу (статика с ?v= кэшируется длинно, а сам HTML — нет)."""
+    from flask import send_from_directory
+    resp = send_from_directory('static/landing', fname, max_age=0)
+    resp.headers['Cache-Control'] = 'no-cache, must-revalidate'
+    return resp
+
+
 @app.route('/privacy')
 @app.route('/terms')
 @app.route('/consent')
 def legal_page():
-    from flask import send_from_directory
     fname = LEGAL_PAGES.get(request.path)
     if not fname:
         abort(404)
-    return send_from_directory('static/landing', fname)
+    return _serve_landing_html(fname)
 
 
 # Health-check endpoint для Render — проверяет что приложение живо И БД отвечает.
