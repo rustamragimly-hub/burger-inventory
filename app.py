@@ -101,6 +101,13 @@ _APP_STARTED_AT = datetime.utcnow()
 LANDING_HOSTS = {'revisi.ru', 'www.revisi.ru'}
 APP_HOST = 'app.revisi.ru'
 
+# Юридические страницы доступны на обоих хостах (не редиректятся на app).
+LEGAL_PAGES = {
+    '/privacy': 'privacy.html',
+    '/terms': 'terms.html',
+    '/consent': 'consent.html',
+}
+
 
 @app.after_request
 def add_owner_security_headers(response):
@@ -117,9 +124,11 @@ def add_owner_security_headers(response):
 @app.before_request
 def route_by_host():
     """revisi.ru/ → лендинг. revisi.ru/<path> → 301 на app.revisi.ru/<path>. app.revisi.ru/* → приложение."""
-    # /static/* и /healthz работают одинаково на обоих хостах без редиректов
+    # /static/*, /healthz и юр-страницы работают одинаково на обоих хостах
     if request.path.startswith('/static/') or request.path == '/healthz':
         return None
+    if request.path in LEGAL_PAGES:
+        return None  # обработает отдельный Flask-роут ниже
 
     host = (request.host or '').split(':')[0].lower()
 
@@ -131,6 +140,17 @@ def route_by_host():
         return redirect(new_url, code=301)
 
     return None
+
+
+@app.route('/privacy')
+@app.route('/terms')
+@app.route('/consent')
+def legal_page():
+    from flask import send_from_directory
+    fname = LEGAL_PAGES.get(request.path)
+    if not fname:
+        abort(404)
+    return send_from_directory('static/landing', fname)
 
 
 # Health-check endpoint для Render — проверяет что приложение живо И БД отвечает.
@@ -4147,7 +4167,7 @@ register_html = '''<!DOCTYPE html>
     </div>
     <label class="checkbox-row">
       <input type="checkbox" name="terms" value="1" required>
-      <span>Согласен с условиями использования</span>
+      <span>Я принимаю <a class="link" href="/terms" target="_blank">договор-оферту</a> и даю <a class="link" href="/consent" target="_blank">согласие на обработку персональных данных</a> в соответствии с <a class="link" href="/privacy" target="_blank">Политикой конфиденциальности</a></span>
     </label>
     <button class="btn-primary" type="submit">Создать аккаунт →</button>
   </form>

@@ -371,7 +371,7 @@
     </div>
 
     <div class="pricing-extra">
-      Сеть от 50+ точек? <a href="#">Свяжитесь с нами</a> — обсудим Enterprise-тариф.
+      Сеть от 50+ точек? <a href="mailto:info@revisi.ru">Свяжитесь с нами</a> — обсудим Enterprise-тариф.
     </div>
   </div>
 </section>
@@ -437,17 +437,35 @@
       </div>
     </div>
     <div class="footer-links">
-      <a href="#">Документация</a>
-      <a href="#">Контакты</a>
-      <a href="#">Telegram</a>
-      <a href="#">Договор-оферта</a>
-      <a href="#">Политика конфиденциальности</a>
+      <a href="#features">Возможности</a>
+      <a href="#pricing">Тарифы</a>
+      <a href="mailto:info@revisi.ru">Контакты</a>
+      <a href="/terms">Договор-оферта</a>
+      <a href="/privacy">Политика конфиденциальности</a>
+      <a href="/consent">Согласие на обработку ПДн</a>
     </div>
     <div class="footer-meta">
-      © 2026 ИП. Все права защищены. Сделано в России.
+      © 2026 Revisi. Сделано в России.<br>
+      <span style="font-size:11px;opacity:0.7;">ИП [ФИО], ИНН [__________]</span>
     </div>
   </div>
 </footer>
+
+<!-- Cookie-уведомление -->
+<div id="cookie-banner" style="display:none;position:fixed;left:50%;bottom:20px;transform:translateX(-50%);
+     width:min(720px,calc(100vw - 32px));background:rgba(18,22,38,0.97);backdrop-filter:blur(14px);
+     border:1px solid rgba(255,255,255,0.12);border-radius:16px;padding:16px 20px;z-index:9999;
+     box-shadow:0 18px 50px rgba(0,0,0,0.5);display:flex;flex-wrap:wrap;align-items:center;gap:14px;
+     font-size:13px;color:#cfd4e3;line-height:1.5;">
+  <span style="flex:1;min-width:220px;">Мы используем файлы cookie для работы сайта. Продолжая пользоваться сайтом, вы соглашаетесь с
+    <a href="/privacy" style="color:#a78bfa;">Политикой конфиденциальности</a>.</span>
+  <button onclick="acceptCookies()" style="background:linear-gradient(120deg,#7c6cf0,#a855f7);color:#fff;
+    border:none;padding:10px 22px;border-radius:10px;font-weight:600;cursor:pointer;font-size:13px;">Принять</button>
+</div>
+<script>
+  function acceptCookies(){ try{localStorage.setItem('cookie_ok','1');}catch(e){} document.getElementById('cookie-banner').style.display='none'; }
+  (function(){ try{ if(!localStorage.getItem('cookie_ok')){ document.getElementById('cookie-banner').style.display='flex'; } }catch(e){ document.getElementById('cookie-banner').style.display='flex'; } })();
+</script>
 
 </body>
 </html>
