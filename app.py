@@ -6449,7 +6449,7 @@ async function confirmRevision(revId) {
       const blob = await res.blob();
       let fname = 'revision.xlsx';
       const cd = res.headers.get('content-disposition') || '';
-      const m = cd.match(/filename\*?=(?:UTF-8'')?["']?([^"';]+)/i);
+      const m = cd.match(/filename\\*?=(?:UTF-8'')?["']?([^"';]+)/i);
       if (m) fname = decodeURIComponent(m[1]);
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
