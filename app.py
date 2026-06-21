@@ -2422,15 +2422,15 @@ def _build_revision_xlsx(revs):
     for it in items:
         qty_by_pid[it.product_id] = qty_by_pid.get(it.product_id, 0) + (it.quantity or 0)
 
-    # Список товаров отчёта — объединение ассортиментов всех локаций ревизий.
-    # Fallback на фактически посчитанные, если ассортимент нигде не настроен.
-    report_pids = set()
+    # Список товаров отчёта — объединение ассортиментов всех локаций ревизий
+    # И всех фактически посчитанных позиций. Посчитанное включаем ВСЕГДА, иначе
+    # товар, посчитанный на локации, но не входящий в её ассортимент (ассортимент
+    # настроен частично или менялся), выпал бы из отчёта и его подсчёт потерялся.
+    report_pids = set(qty_by_pid.keys())
     if uniq_loc_ids:
-        report_pids = {lp.product_id for lp in LocationProduct.query.filter(
+        report_pids |= {lp.product_id for lp in LocationProduct.query.filter(
             LocationProduct.location_id.in_(uniq_loc_ids)
         ).all()}
-    if not report_pids:
-        report_pids = set(qty_by_pid.keys())
     products = {p.id: p for p in Product.query.filter(
         Product.id.in_(report_pids), Product.is_active == True
     ).all()} if report_pids else {}
@@ -2685,12 +2685,16 @@ def admin_revision_confirm(rev_id):
             confirmed.append(_keep)
         db.session.flush()
 
-        buf = _build_revision_xlsx(confirmed)
         now = datetime.utcnow()
+        # Единый момент подтверждения для ВСЕЙ волны: иначе локации с разным
+        # временем завершения (зоны закрывали не одновременно) попадут в разные
+        # группы истории, и «Скачать общий»/«Расхождения» по одной волне не
+        # просуммируют все локации (например, склад окажется отдельной волной).
         for _r in confirmed:
             _r.status = 'completed'
-            if not _r.finished_at:
-                _r.finished_at = now
+            _r.finished_at = now
+        db.session.flush()
+        buf = _build_revision_xlsx(confirmed)
         db.session.commit()
 
         date_str = now.strftime('%Y%m%d_%H%M')
