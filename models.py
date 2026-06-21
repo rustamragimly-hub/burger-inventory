@@ -2,10 +2,9 @@
 Модели базы данных для Revisi.
 Каждый класс = одна таблица в PostgreSQL.
 """
-from datetime import datetime, timedelta
+from datetime import datetime
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
-import secrets
 
 db = SQLAlchemy()
 

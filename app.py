@@ -8,7 +8,7 @@ from flask import (
 )
 from flask_login import (
     LoginManager, UserMixin, login_user, logout_user,
-    current_user, login_required,
+    current_user,
 )
 from flask_migrate import Migrate
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -1472,10 +1472,8 @@ def admin_add_user():
         flash('Пользователь с таким логином уже существует.', 'error')
         return redirect('/admin#tab-users')
 
-    generated = None
     if not password:
         password = secrets.token_urlsafe(8)
-        generated = password
 
     try:
         u = User(org_id=org.id, username=username, email=email, role='operator')
@@ -1623,9 +1621,8 @@ def _parse_iiko_bank(file_bytes):
         сохраняется как шаблон отчёта и заполняется остатками при ревизии.
     """
     import io as _io
-    import xml.etree.ElementTree as _ET
+    import defusedxml.ElementTree as _ET  # защита от XXE / XML-бомб при разборе загруженных файлов
     from openpyxl import load_workbook as _lw, Workbook as _WB
-    from openpyxl.styles import Font as _F, Alignment as _Al, Border as _Bd, Side as _Sd
     from openpyxl.utils import get_column_letter as _gcl
 
     _meta_prefixes = (
@@ -1681,7 +1678,7 @@ def _parse_iiko_bank(file_bytes):
             rows.append({
                 'Категория': current_cat or '',
                 'Название': c,
-                'Код': b if not b.lower() in ('код',) else '',
+                'Код': b if b.lower() not in ('код',) else '',
                 'Ед. изм.': f,
             })
             continue
@@ -1701,8 +1698,6 @@ def _parse_iiko_bank(file_bytes):
         wb2 = _WB()
         ws2 = wb2.active
         ws2.title = 'Page1'
-        thin = _Sd(border_style='thin', color='CCCCCC')
-        border = _Bd(left=thin, right=thin, top=thin, bottom=thin)
         for ri, r in enumerate(grid, start=1):
             for ci in range(1, 9):
                 val = _g(r, ci)
@@ -1731,7 +1726,7 @@ def _parse_stock_export(file_bytes):
     Возвращает список dict {code, name, qty, price}.
     """
     import io as _io
-    import xml.etree.ElementTree as _ET
+    import defusedxml.ElementTree as _ET  # защита от XXE / XML-бомб при разборе загруженных файлов
     from openpyxl import load_workbook as _lw
 
     def _is_xml(b):
@@ -2117,7 +2112,6 @@ def revision():
             qty_map = {k: round(v, 3) for k, v in qty_map.items()}
 
     # Группировка товаров по категориям (с учётом "без категории")
-    cat_map = {c.id: c for c in categories}
     grouped = {}
     for p in products:
         grouped.setdefault(p.category_id, []).append(p)
@@ -2432,7 +2426,7 @@ def _build_revision_xlsx(revs):
             LocationProduct.location_id.in_(uniq_loc_ids)
         ).all()}
     products = {p.id: p for p in Product.query.filter(
-        Product.id.in_(report_pids), Product.is_active == True
+        Product.id.in_(report_pids), Product.is_active.is_(True)
     ).all()} if report_pids else {}
 
     # Если у компании есть кастомный Excel-шаблон — заполняем его
@@ -3516,7 +3510,7 @@ def owner_dashboard():
 
     # Конверсия trial → paid
     finished_trials_total = Organization.query.filter(
-        (Organization.plan != 'trial') | ((Organization.trial_ends_at != None) & (Organization.trial_ends_at <= now))
+        (Organization.plan != 'trial') | (Organization.trial_ends_at.isnot(None) & (Organization.trial_ends_at <= now))
     ).filter(Organization.created_at < now - timedelta(days=14)).count()
     converted = Organization.query.filter(
         Organization.plan.in_(('pro', 'business'))
@@ -3588,7 +3582,6 @@ def owner_dashboard():
 @owner_required
 def owner_orgs():
     orgs = Organization.query.order_by(Organization.created_at.desc()).all()
-    now = datetime.utcnow()
 
     org_rows = []
     for org in orgs:
@@ -3710,7 +3703,8 @@ def owner_delete_org(org_id):
         prod_ids = [p.id for p in Product.query.filter_by(org_id=org_id_val).all()]
         ticket_ids = [t.id for t in SupportTicket.query.filter_by(org_id=org_id_val).all()]
 
-        D = lambda q: q.delete(synchronize_session=False)
+        def D(q):
+            return q.delete(synchronize_session=False)
         # тикеты поддержки
         if ticket_ids:
             D(SupportTicketReply.query.filter(SupportTicketReply.ticket_id.in_(ticket_ids)))
@@ -4014,7 +4008,7 @@ def owner_alerts():
     paid_expiring = []
     for org in Organization.query.filter(
         Organization.plan.in_(('pro', 'business')),
-        Organization.subscription_ends_at != None,
+        Organization.subscription_ends_at.isnot(None),
         Organization.subscription_ends_at > now,
         Organization.subscription_ends_at <= in_7,
     ).all():
@@ -4074,7 +4068,8 @@ def owner_backup():
 @app.route('/owner/backup/download')
 @owner_required
 def owner_backup_download():
-    import json, zipfile
+    import json
+    import zipfile
     log_owner_action('backup_download')
     buf = BytesIO()
     with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
@@ -9125,7 +9120,7 @@ with app.app_context():
                     if not _exists:
                         _admin_user.username = 'TimurSaipov'
                         db.session.commit()
-                        print(f'✅ Мобар admin → TimurSaipov')
+                        print('✅ Мобар admin → TimurSaipov')
     except Exception as _e:
         db.session.rollback()
         print(f'⚠️  Миграция Мобар username: {_e}')
@@ -9252,6 +9247,8 @@ with app.app_context():
             print(f'✅ ООО Мобар создан: {mobar_email}, товаров: {count}')
 
 if __name__ == "__main__":
+    # Локальный/dev-запуск. В продакшене приложение поднимается через gunicorn,
+    # этот блок не выполняется. Bind 0.0.0.0 нужен внутри контейнера.
     port = int(os.environ.get('PORT', 5001))
     debug = os.environ.get('FLASK_ENV') != 'production'
-    app.run(host="0.0.0.0", port=port, debug=debug)
+    app.run(host="0.0.0.0", port=port, debug=debug)  # nosec B104
