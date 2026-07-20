@@ -8478,7 +8478,7 @@ owner_orgs_html = '''<!DOCTYPE html>
     <tbody id="orgsBody">
     {% for r in org_rows %}
     <tr class="org-row" data-search="{{ r.name|lower }} {{ r.email|lower }}">
-      <td style="font-weight:700;">{{ r.name }}</td>
+      <td style="font-weight:700;"><a href="/owner/orgs/{{ r.id }}" style="color:#c4b5fd;text-decoration:none;">{{ r.name }}</a></td>
       <td style="color:rgba(255,255,255,0.6);">{{ r.email }}</td>
       <td><span class="badge badge-{{ r.plan }}">{{ r.plan }}</span></td>
       <td style="color:rgba(255,255,255,0.5);font-size:12px;">{{ r.ends }}</td>
