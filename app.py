@@ -2374,14 +2374,109 @@ def revision_product_history(product_id):
 
 
 # ============== АДМИН: РЕВИЗИИ (ЗАПРОСЫ/ИСТОРИЯ) ==============
+def _build_smoky_xlsx(org, user, loc_label, primary, qty_by_pid):
+    """Индивидуальный «Бланк инвентаризации» для Смоки Бар (report_template=smoky_inventory).
+    Показывает ВЕСЬ каталог организации, сгруппированный по категориям (в порядке
+    sort_order), с колонками Код / Наименование / Ед. изм. / Остаток фактический / Отметки.
+    Столбец «Остаток фактический» заполняется по данным ревизии (qty_by_pid) — включая
+    товары, добавленные во время самой ревизии.
+    """
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+
+    cats = Category.query.filter_by(org_id=org.id).order_by(
+        Category.sort_order, Category.name
+    ).all()
+    prods = Product.query.filter_by(org_id=org.id, is_active=True).all()
+    by_cat = {}
+    for p in prods:
+        by_cat.setdefault(p.category_id, []).append(p)
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = 'Бланк инвентаризации'
+
+    bold = Font(bold=True)
+    thin = Side(border_style='thin', color='BBBBBB')
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    cat_fill = PatternFill('solid', fgColor='F2E9DE')
+    hdr_fill = PatternFill('solid', fgColor='2B2B2B')
+    center = Alignment(horizontal='center', vertical='center')
+    left = Alignment(horizontal='left', vertical='center', wrap_text=True)
+
+    ws['A1'] = 'Бланк инвентаризации'
+    ws['A1'].font = Font(bold=True, size=15)
+    ws.merge_cells('A1:E1')
+    date_str = _fmt_dt(primary.finished_at or primary.created_at or datetime.utcnow(), org, fmt='%d.%m.%Y')
+    ws['A2'] = f'Компания: {org.name}'
+    ws.merge_cells('A2:E2')
+    ws['A3'] = f'Локация: {loc_label}    Оператор: {user.username if user else "—"}    Дата: {date_str}'
+    ws.merge_cells('A3:E3')
+
+    hr = 5
+    for i, h in enumerate(['Код', 'Наименование', 'Ед. изм.', 'Остаток фактический', 'Отметки'], start=1):
+        c = ws.cell(row=hr, column=i, value=h)
+        c.font = Font(bold=True, color='FFFFFF')
+        c.fill = hdr_fill
+        c.alignment = center
+        c.border = border
+
+    r = hr + 1
+    for cat in cats:
+        cat_prods = sorted(by_cat.get(cat.id, []), key=lambda p: p.name)
+        if not cat_prods:
+            continue
+        cc = ws.cell(row=r, column=1, value=cat.name)
+        cc.font = bold
+        cc.fill = cat_fill
+        ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=5)
+        for col in range(1, 6):
+            ws.cell(row=r, column=col).border = border
+        r += 1
+        for p in cat_prods:
+            ws.cell(row=r, column=1, value=p.code or '').border = border
+            nm = ws.cell(row=r, column=2, value=p.name)
+            nm.border = border
+            nm.alignment = left
+            uc = ws.cell(row=r, column=3, value=p.unit)
+            uc.border = border
+            uc.alignment = center
+            qty = qty_by_pid.get(p.id)
+            qc = ws.cell(row=r, column=4, value=(qty if qty else None))
+            qc.border = border
+            qc.alignment = center
+            ws.cell(row=r, column=5, value='').border = border
+            r += 1
+
+    r += 1
+    ws.cell(row=r, column=1, value='Ответственное лицо:').font = bold
+    ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=3)
+    ws.cell(row=r, column=4, value='_______________')
+    r += 1
+    ws.cell(row=r, column=1, value=f'Дата печати: {date_str}')
+    ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=3)
+
+    ws.column_dimensions['A'].width = 10
+    ws.column_dimensions['B'].width = 52
+    ws.column_dimensions['C'].width = 10
+    ws.column_dimensions['D'].width = 18
+    ws.column_dimensions['E'].width = 14
+    ws.freeze_panes = 'A6'
+
+    buf = BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf
+
+
 def _build_revision_xlsx(revs):
     """Сгенерировать xlsx с итогами ревизии.
 
     `revs` — одна ревизия ИЛИ список ревизий. Если список — формируется общий
     отчёт по ресторану: остаток каждого товара суммируется по всем локациям,
     список товаров — объединение ассортиментов этих локаций.
-    Если у компании есть кастомный шаблон (excel_template) — заполняем его,
-    иначе генерируем стандартный отчёт.
+    Приоритет формата: индивидуальный (report_template) → кастомный загруженный
+    шаблон (excel_template) → стандартный отчёт.
     """
     import openpyxl
     from openpyxl import Workbook
@@ -2415,6 +2510,11 @@ def _build_revision_xlsx(revs):
     qty_by_pid = {}
     for it in items:
         qty_by_pid[it.product_id] = qty_by_pid.get(it.product_id, 0) + (it.quantity or 0)
+
+    # Индивидуальный формат отчёта по feature-флагу (напр. Смоки Бар)
+    report_tpl = (org.features or {}).get('report_template') if org and org.features else None
+    if report_tpl == 'smoky_inventory':
+        return _build_smoky_xlsx(org, user, loc_label, primary, qty_by_pid)
 
     # Список товаров отчёта — объединение ассортиментов всех локаций ревизий
     # И всех фактически посчитанных позиций. Посчитанное включаем ВСЕГДА, иначе
@@ -3002,6 +3102,100 @@ def create_owner():
     db.session.add(owner)
     db.session.commit()
     click.echo(f'✔ OwnerUser создан: {email}')
+
+
+@app.cli.command('seed-smoky')
+def seed_smoky():
+    """Создать организацию «Смоки Бар МВЛ (международный)» и импортировать каталог.
+    Идемпотентна: повторный запуск не создаёт дублей, добавляет только недостающее
+    и привязывает все товары к локации «Бар» (LocationProduct), чтобы они были
+    видны оператору и попадали в ревизии.
+    """
+    import json as _json
+    email = 'smoky@revisi.ru'
+    org_name = 'Смоки Бар МВЛ (международный)'
+
+    data_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'smoky_products.json')
+    if not os.path.exists(data_path):
+        click.echo(f'✗ Не найден файл каталога: {data_path}')
+        return
+    with open(data_path, encoding='utf-8') as f:
+        catalog = _json.load(f)
+
+    org = Organization.query.filter_by(owner_email=email).first()
+    created_org = False
+    generated_password = None
+    if not org:
+        org = Organization(
+            name=org_name, owner_email=email, email_verified=True,
+            plan='trial', trial_ends_at=datetime.utcnow() + timedelta(days=30),
+            features={'excel_export': True, 'multi_location': True,
+                      'history': True, 'unlimited_users': True,
+                      'report_template': 'smoky_inventory'},
+        )
+        db.session.add(org)
+        db.session.flush()
+        created_org = True
+        generated_password = secrets.token_urlsafe(9)
+        admin = User(org_id=org.id, username='smoky', email=email, role='admin')
+        admin.set_password(generated_password)
+        db.session.add(admin)
+    else:
+        feats = dict(org.features or {})
+        feats.setdefault('excel_export', True)
+        feats['report_template'] = 'smoky_inventory'
+        org.features = feats
+
+    # Локация «Бар»
+    loc = Location.query.filter_by(org_id=org.id, name='Бар').first()
+    if not loc:
+        loc = Location(org_id=org.id, name='Бар', sort_order=0)
+        db.session.add(loc)
+        db.session.flush()
+
+    existing_cats = {c.name: c for c in Category.query.filter_by(org_id=org.id).all()}
+    existing_codes = {p.code: p for p in Product.query.filter_by(org_id=org.id).all() if p.code}
+    linked_pids = {lp.product_id for lp in LocationProduct.query.filter_by(location_id=loc.id).all()}
+
+    n_cat_new = n_prod_new = n_link_new = 0
+    for ci, block in enumerate(catalog):
+        cat = existing_cats.get(block['category'])
+        if not cat:
+            cat = Category(org_id=org.id, name=block['category'], sort_order=ci)
+            db.session.add(cat)
+            db.session.flush()
+            existing_cats[block['category']] = cat
+            n_cat_new += 1
+        for prod in block['products']:
+            code = str(prod['code']).strip()
+            p = existing_codes.get(code)
+            if not p:
+                p = Product(org_id=org.id, category_id=cat.id,
+                            name=prod['name'][:300], code=code,
+                            unit=prod['unit'], is_active=True)
+                db.session.add(p)
+                db.session.flush()
+                existing_codes[code] = p
+                n_prod_new += 1
+            if p.id not in linked_pids:
+                db.session.add(LocationProduct(location_id=loc.id, product_id=p.id))
+                linked_pids.add(p.id)
+                n_link_new += 1
+
+    db.session.commit()
+
+    click.echo('✔ Готово.')
+    click.echo(f'  Организация: {org_name} (id={org.id}){" — создана" if created_org else " — уже была"}')
+    click.echo(f'  Email:     {email}')
+    if generated_password:
+        click.echo('  Логин:     smoky')
+        click.echo(f'  Пароль:    {generated_password}   ← СОХРАНИТЕ, показывается один раз')
+    else:
+        click.echo('  Логин/пароль: без изменений (организация уже существовала)')
+    click.echo(f'  Категорий добавлено: {n_cat_new}')
+    click.echo(f'  Товаров добавлено:   {n_prod_new}')
+    click.echo(f'  Привязок к «Бар»:    {n_link_new}')
+    click.echo('  Формат отчёта: smoky_inventory (бланк инвентаризации в .xlsx)')
 
 
 # ============== ПОДДЕРЖКА (КЛИЕНТСКАЯ СТОРОНА) ==============
@@ -3853,6 +4047,76 @@ def owner_set_price(org_id):
         log_owner_action('set_price', target_org_id=org.id, details=f'price={price}')
         db.session.commit()
         flash(f'Цена подписки: {price}₽/мес.', 'success')
+    except Exception as e:
+        db.session.rollback()
+        flash(f'Ошибка: {e}', 'error')
+    return redirect(f'/owner/orgs/{org_id}')
+
+
+@app.route('/owner/orgs/<int:org_id>/users/<int:user_id>/edit', methods=['POST'])
+@owner_required
+def owner_edit_user(org_id, user_id):
+    """Владелец меняет логин / email / роль / пароль пользователя компании."""
+    org = db.session.get(Organization, org_id)
+    if not org:
+        flash('Компания не найдена.', 'error')
+        return redirect('/owner/orgs')
+    user = db.session.get(User, user_id)
+    if not user or user.org_id != org.id:
+        flash('Пользователь не найден.', 'error')
+        return redirect(f'/owner/orgs/{org_id}')
+
+    new_username = (request.form.get('username') or '').strip()
+    new_email = (request.form.get('email') or '').strip().lower()
+    new_password = request.form.get('password') or ''
+    new_role = (request.form.get('role') or '').strip()
+
+    if not new_username:
+        flash('Логин не может быть пустым.', 'error')
+        return redirect(f'/owner/orgs/{org_id}')
+    if len(new_username) > 100:
+        flash('Логин слишком длинный.', 'error')
+        return redirect(f'/owner/orgs/{org_id}')
+    clash = User.query.filter(
+        User.org_id == org.id, User.username == new_username, User.id != user.id,
+    ).first()
+    if clash:
+        flash(f'Логин «{new_username}» уже занят в этой компании.', 'error')
+        return redirect(f'/owner/orgs/{org_id}')
+
+    changes = []
+    if new_username != user.username:
+        changes.append('username')
+        user.username = new_username
+    if new_email != (user.email or ''):
+        changes.append('email')
+        user.email = new_email or None
+    if new_role in ('admin', 'operator') and new_role != user.role:
+        if user.role == 'admin' and new_role == 'operator':
+            admin_count = User.query.filter_by(org_id=org.id, role='admin').count()
+            if admin_count <= 1:
+                flash('Нельзя понизить единственного админа компании.', 'error')
+                return redirect(f'/owner/orgs/{org_id}')
+        changes.append('role')
+        user.role = new_role
+    if new_password:
+        if len(new_password) < 6:
+            flash('Пароль должен быть не короче 6 символов.', 'error')
+            return redirect(f'/owner/orgs/{org_id}')
+        user.set_password(new_password)
+        changes.append('password')
+
+    if not changes:
+        flash('Изменений нет.', 'success')
+        return redirect(f'/owner/orgs/{org_id}')
+
+    try:
+        log_owner_action(
+            'edit_user', target_org_id=org.id, target_user_id=user.id,
+            details=f'fields={",".join(changes)} username={user.username}',
+        )
+        db.session.commit()
+        flash(f'Пользователь обновлён ({", ".join(changes)}).', 'success')
     except Exception as e:
         db.session.rollback()
         flash(f'Ошибка: {e}', 'error')
@@ -8488,21 +8752,47 @@ owner_org_detail_html = (
   <!-- Пользователи -->
   <div class="section-card">
     <div class="section-title">👥 Пользователи компании</div>
+    <div style="font-size:12px;color:rgba(255,255,255,0.5);margin-bottom:12px;">
+      Нажмите «✎ Изменить», чтобы поменять логин, email, роль или сбросить пароль пользователя.
+    </div>
     {% if user_rows %}
-    <div class="tbl-wrap">
-    <table class="recent-table" style="min-width:520px;">
-      <thead><tr><th>Логин</th><th>Email</th><th>Роль</th><th>Последний вход</th></tr></thead>
-      <tbody>
-        {% for u in user_rows %}
-        <tr>
-          <td style="font-weight:600;">{{ u.username }}</td>
-          <td style="color:rgba(255,255,255,0.6);">{{ u.email }}</td>
-          <td><span class="badge badge-{{ 'pro' if u.role == 'admin' else 'free' }}">{{ u.role }}</span></td>
-          <td style="color:rgba(255,255,255,0.5);font-size:12px;">{{ u.last_login }}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
+    <div style="display:flex;flex-direction:column;gap:8px;">
+      {% for u in user_rows %}
+      <div class="user-edit-card" style="border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:12px 14px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">
+          <div style="min-width:0;">
+            <div style="font-weight:600;">{{ u.username }}
+              <span class="badge badge-{{ 'pro' if u.role == 'admin' else 'free' }}" style="margin-left:6px;">{{ u.role }}</span>
+            </div>
+            <div style="font-size:12px;color:rgba(255,255,255,0.55);word-break:break-all;">{{ u.email }}</div>
+            <div style="font-size:11px;color:rgba(255,255,255,0.4);">вход: {{ u.last_login }}</div>
+          </div>
+          <button type="button" class="btn-sm btn-extend" onclick="var f=document.getElementById('edit-u-{{ u.id }}'); f.style.display = f.style.display==='block' ? 'none' : 'block';">✎ Изменить</button>
+        </div>
+        <form id="edit-u-{{ u.id }}" method="post" action="/owner/orgs/{{ org.id }}/users/{{ u.id }}/edit"
+              style="display:none;margin-top:12px;padding-top:12px;border-top:1px solid rgba(255,255,255,0.08);"
+              onsubmit="return confirm('Сохранить изменения пользователя «{{ u.username }}»?');">
+          <div style="display:flex;flex-direction:column;gap:8px;">
+            <label style="font-size:12px;color:rgba(255,255,255,0.6);">Логин
+              <input name="username" value="{{ u.username }}" required maxlength="100" class="owner-input">
+            </label>
+            <label style="font-size:12px;color:rgba(255,255,255,0.6);">Email
+              <input name="email" value="{{ u.email if u.email != '—' else '' }}" type="email" class="owner-input" placeholder="необязательно">
+            </label>
+            <label style="font-size:12px;color:rgba(255,255,255,0.6);">Роль
+              <select name="role" class="owner-input">
+                <option value="admin" {% if u.role=='admin' %}selected{% endif %}>admin</option>
+                <option value="operator" {% if u.role=='operator' %}selected{% endif %}>operator</option>
+              </select>
+            </label>
+            <label style="font-size:12px;color:rgba(255,255,255,0.6);">Новый пароль
+              <input name="password" type="text" class="owner-input" placeholder="оставьте пустым — не менять" autocomplete="new-password">
+            </label>
+            <button type="submit" class="btn-primary-sm" style="margin-top:4px;">Сохранить пользователя</button>
+          </div>
+        </form>
+      </div>
+      {% endfor %}
     </div>
     {% else %}
     <div style="color:rgba(255,255,255,0.5);font-size:13px;">Пока нет пользователей.</div>
@@ -8510,6 +8800,11 @@ owner_org_detail_html = (
   </div>
 
 </div>
+<style>
+.owner-input{display:block;width:100%;margin-top:4px;background:rgba(0,0,0,0.3);border:1px solid rgba(255,255,255,0.15);
+  border-radius:8px;padding:9px 12px;color:#fff;font-family:inherit;font-size:14px;box-sizing:border-box;}
+.owner-input:focus{outline:none;border-color:#fb923c;}
+</style>
 ''' + _OWNER_PAGE_FOOT
 )
 

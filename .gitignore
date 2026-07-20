@@ -7,3 +7,13 @@ __pycache__/
 venv/
 env/
 .venv
+
+# Рабочие/временные файлы
+.claude/
+_design/
+_smoky.pdf
+_smoky_parsed.json
+_smoky_report.xlsx
+*.zip
+*.code-workspace
+node_modules/
