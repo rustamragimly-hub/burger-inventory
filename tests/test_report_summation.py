@@ -86,3 +86,68 @@ def test_counted_product_not_in_assortment_still_in_report(session, org_factory)
     buf = app._build_revision_xlsx([rev])
     report = _read_report(buf)
     assert report.get('Кола') == 7
+
+
+def test_uncounted_assortment_product_shows_zero(session, org_factory):
+    # Товар из ассортимента локации, который не посчитали, должен присутствовать
+    # в отчёте с остатком 0 — не пустой ячейкой и не выпадать из отчёта.
+    org, locs, prods = org_factory(
+        products=[('1001', 'Кола', 'шт'), ('1002', 'Фанта', 'шт')], locations=('Склад',))
+    sklad = locs[0]; kola, fanta = prods
+    db.session.add(models.LocationProduct(location_id=sklad.id, product_id=kola.id))
+    db.session.add(models.LocationProduct(location_id=sklad.id, product_id=fanta.id))
+    when = datetime(2026, 6, 1, 10, 0)
+    rev = _completed_rev(org, sklad, when)
+    _item(rev, sklad, kola, 5)  # Фанту не считали
+    db.session.commit()
+
+    report = _read_report(app._build_revision_xlsx([rev]))
+    assert report.get('Кола') == 5
+    assert report.get('Фанта') == 0
+
+
+def test_assortment_union_across_locations(session, org_factory):
+    # Товар есть хотя бы в одной локации ревизии → он в отчёте.
+    # Кола только на складе, Фанта только на кухне — в общем отчёте оба (с 0).
+    org, locs, prods = org_factory(
+        products=[('1001', 'Кола', 'шт'), ('1002', 'Фанта', 'шт')],
+        locations=('Склад', 'Кухня'))
+    sklad, kuhnya = locs; kola, fanta = prods
+    db.session.add(models.LocationProduct(location_id=sklad.id, product_id=kola.id))
+    db.session.add(models.LocationProduct(location_id=kuhnya.id, product_id=fanta.id))
+    when = datetime(2026, 6, 1, 10, 0)
+    r1 = _completed_rev(org, sklad, when)
+    r2 = _completed_rev(org, kuhnya, when)
+    _item(r1, sklad, kola, 3)  # Фанту нигде не считали
+    db.session.commit()
+
+    report = _read_report(app._build_revision_xlsx([r1, r2]))
+    assert report.get('Кола') == 3
+    assert report.get('Фанта') == 0
+
+    # А в отчёте только по складу кухонная Фанта появляться не должна.
+    report_sklad = _read_report(app._build_revision_xlsx([r1]))
+    assert report_sklad.get('Кола') == 3
+    assert 'Фанта' not in report_sklad
+
+
+def test_category_with_nothing_counted_still_in_report(session, org_factory):
+    # Категория, в которой ничего не посчитали, всё равно выводится —
+    # её товары из ассортимента показываются с нулями.
+    org, locs, prods = org_factory(products=[('1001', 'Кола', 'шт')], locations=('Склад',))
+    sklad = locs[0]; kola = prods[0]
+    cat = models.Category(org_id=org.id, name='Снеки')
+    db.session.add(cat)
+    db.session.flush()
+    chips = models.Product(org_id=org.id, category_id=cat.id, name='Чипсы', code='2001', unit='шт')
+    db.session.add(chips)
+    db.session.flush()
+    db.session.add(models.LocationProduct(location_id=sklad.id, product_id=kola.id))
+    db.session.add(models.LocationProduct(location_id=sklad.id, product_id=chips.id))
+    when = datetime(2026, 6, 1, 10, 0)
+    rev = _completed_rev(org, sklad, when)
+    _item(rev, sklad, kola, 4)  # в «Снеках» ничего не считали
+    db.session.commit()
+
+    report = _read_report(app._build_revision_xlsx([rev]))
+    assert report.get('Чипсы') == 0

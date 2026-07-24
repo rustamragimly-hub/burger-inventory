@@ -2374,12 +2374,12 @@ def revision_product_history(product_id):
 
 
 # ============== АДМИН: РЕВИЗИИ (ЗАПРОСЫ/ИСТОРИЯ) ==============
-def _build_smoky_xlsx(org, user, loc_label, primary, qty_by_pid):
+def _build_smoky_xlsx(org, user, loc_label, primary, qty_by_pid, products):
     """Индивидуальный «Бланк инвентаризации» для Смоки Бар (report_template=smoky_inventory).
-    Показывает ВЕСЬ каталог организации, сгруппированный по категориям (в порядке
-    sort_order), с колонками Код / Наименование / Ед. изм. / Остаток фактический / Отметки.
-    Столбец «Остаток фактический» заполняется по данным ревизии (qty_by_pid) — включая
-    товары, добавленные во время самой ревизии.
+    Показывает товары по ассортименту локаций ревизии (`products` — уже объединение
+    ассортиментов всех локаций + всё посчитанное, включая добавленное во время ревизии),
+    сгруппированные по категориям (в порядке sort_order). Колонки: Код / Наименование /
+    Ед. изм. / Остаток фактический / Отметки. Непосчитанные позиции получают остаток 0.
     """
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -2387,9 +2387,8 @@ def _build_smoky_xlsx(org, user, loc_label, primary, qty_by_pid):
     cats = Category.query.filter_by(org_id=org.id).order_by(
         Category.sort_order, Category.name
     ).all()
-    prods = Product.query.filter_by(org_id=org.id, is_active=True).all()
     by_cat = {}
-    for p in prods:
+    for p in products.values():
         by_cat.setdefault(p.category_id, []).append(p)
 
     wb = Workbook()
@@ -2441,8 +2440,8 @@ def _build_smoky_xlsx(org, user, loc_label, primary, qty_by_pid):
             uc = ws.cell(row=r, column=3, value=p.unit)
             uc.border = border
             uc.alignment = center
-            qty = qty_by_pid.get(p.id)
-            qc = ws.cell(row=r, column=4, value=(qty if qty else None))
+            # Непосчитанный товар из ассортимента — явный 0, а не пустая клетка.
+            qc = ws.cell(row=r, column=4, value=qty_by_pid.get(p.id, 0))
             qc.border = border
             qc.alignment = center
             ws.cell(row=r, column=5, value='').border = border
@@ -2511,15 +2510,12 @@ def _build_revision_xlsx(revs):
     for it in items:
         qty_by_pid[it.product_id] = qty_by_pid.get(it.product_id, 0) + (it.quantity or 0)
 
-    # Индивидуальный формат отчёта по feature-флагу (напр. Смоки Бар)
-    report_tpl = (org.features or {}).get('report_template') if org and org.features else None
-    if report_tpl == 'smoky_inventory':
-        return _build_smoky_xlsx(org, user, loc_label, primary, qty_by_pid)
-
     # Список товаров отчёта — объединение ассортиментов всех локаций ревизий
     # И всех фактически посчитанных позиций. Посчитанное включаем ВСЕГДА, иначе
     # товар, посчитанный на локации, но не входящий в её ассортимент (ассортимент
     # настроен частично или менялся), выпал бы из отчёта и его подсчёт потерялся.
+    # Товар из ассортимента, который НЕ посчитали, тоже остаётся в отчёте — с
+    # остатком 0, чтобы было видно «позиция была, но её не пересчитали».
     report_pids = set(qty_by_pid.keys())
     if uniq_loc_ids:
         report_pids |= {lp.product_id for lp in LocationProduct.query.filter(
@@ -2528,6 +2524,11 @@ def _build_revision_xlsx(revs):
     products = {p.id: p for p in Product.query.filter(
         Product.id.in_(report_pids), Product.is_active.is_(True)
     ).all()} if report_pids else {}
+
+    # Индивидуальный формат отчёта по feature-флагу (напр. Смоки Бар)
+    report_tpl = (org.features or {}).get('report_template') if org and org.features else None
+    if report_tpl == 'smoky_inventory':
+        return _build_smoky_xlsx(org, user, loc_label, primary, qty_by_pid, products)
 
     # Если у компании есть кастомный Excel-шаблон — заполняем его
     if org and org.excel_template:
@@ -2576,10 +2577,11 @@ def _build_revision_xlsx(revs):
                     name_str = str(name_cell).strip().lower()
                     if name_str in agg_by_name:
                         qty = agg_by_name[name_str]
-            # Пишем остаток только если реально считали (qty > 0). Непосчитанные
-            # позиции оставляем пустыми — как в исходном iiko-бланке, где пустая
-            # ячейка означает «не считали». Нули в отчёте больше не появляются.
-            if qty:
+            # qty is not None ⇔ строка сматчилась с товаром из ассортимента/подсчёта.
+            # Такие строки заполняем всегда: непосчитанный товар получает явный 0
+            # (видно, что позиция есть в ассортименте, но её не пересчитали).
+            # Строки, не попавшие в ассортимент, не трогаем — их удалит постобработка.
+            if qty is not None:
                 try:
                     ws.cell(row=row, column=7, value=qty)
                 except AttributeError:
@@ -2587,8 +2589,9 @@ def _build_revision_xlsx(revs):
                     pass
 
         # Постобработка бланка:
-        #  • убираем строки товаров не из ассортимента локации;
-        #  • убираем целые категории, в которых ни один товар не посчитан;
+        #  • убираем строки товаров не из ассортимента локаций ревизии;
+        #  • категории оставляем, если в них остался хоть один товар ассортимента
+        #    (даже непосчитанный — он показан с нулём); пустые категории убираем;
         #  • снимаем фоновую заливку с заголовков категорий.
         allowed_codes = {p.code for p in products.values() if p.code}
         allowed_names = {p.name.strip().lower() for p in products.values() if p.name}
@@ -2613,11 +2616,6 @@ def _build_revision_xlsx(revs):
         def _is_product_row(row):
             return bool(_cell_s(row, 3) and _cell_s(row, 6))
 
-        def _row_qty(row):
-            code_s = _cell_s(row, 2)
-            name_s = _cell_s(row, 3).lower()
-            return agg_by_code.get(code_s) or agg_by_name.get(name_s) or 0
-
         def _in_assortment(row):
             return _cell_s(row, 2) in allowed_codes or _cell_s(row, 3).lower() in allowed_names
 
@@ -2627,17 +2625,16 @@ def _build_revision_xlsx(revs):
         for idx, crow in enumerate(cat_rows):
             next_cat = cat_rows[idx + 1] if idx + 1 < len(cat_rows) else max_r + 1
             block_products = [r for r in range(crow + 1, next_cat) if _is_product_row(r)]
-            counted_any = False
+            remaining = 0
             for pr in block_products:
-                if not _in_assortment(pr):
+                if _in_assortment(pr):
+                    remaining += 1
+                else:
                     rows_to_delete.add(pr)
-                elif _row_qty(pr) > 0:
-                    counted_any = True
-            # Категория без единого посчитанного товара — убираем целиком.
-            if not counted_any:
+            # Заголовок категории убираем только если в ней не осталось ни одного
+            # товара ассортимента. Непосчитанные товары НЕ повод удалять категорию.
+            if remaining == 0:
                 rows_to_delete.add(crow)
-                for pr in block_products:
-                    rows_to_delete.add(pr)
 
         # Снимаем заливку с оставшихся заголовков категорий (бежевый фон).
         _no_fill = PatternFill(fill_type=None)
@@ -2708,9 +2705,6 @@ def _build_revision_xlsx(revs):
     r = header_row + 1
     for cat_name in sorted(grouped.keys()):
         cat_items = grouped[cat_name]
-        # Категории без единого посчитанного товара в отчёт не выводим.
-        if not any(i['qty'] for i in cat_items.values()):
-            continue
         # Строка-заголовок категории (без фоновой заливки)
         cc = ws.cell(row=r, column=1, value=cat_name)
         cc.font = bold
@@ -2721,8 +2715,8 @@ def _build_revision_xlsx(revs):
             ws.cell(row=r, column=2, value=info['name']).border = border
             ws.cell(row=r, column=3, value=info['unit']).border = border
             ws.cell(row=r, column=4, value=cat_name).border = border
-            # Непосчитанные позиции — пустая ячейка, а не 0 (нули убираем из отчёта).
-            ws.cell(row=r, column=5, value=(info['qty'] if info['qty'] else None)).border = border
+            # Непосчитанная позиция ассортимента — явный 0, а не пустая ячейка.
+            ws.cell(row=r, column=5, value=info['qty']).border = border
             r += 1
 
     # Автоширина — упрощённо. Используем get_column_letter напрямую, потому что
