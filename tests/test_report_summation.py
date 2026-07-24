@@ -107,8 +107,9 @@ def test_uncounted_assortment_product_shows_zero(session, org_factory):
 
 
 def test_assortment_union_across_locations(session, org_factory):
-    # Товар есть хотя бы в одной локации ревизии → он в отчёте.
-    # Кола только на складе, Фанта только на кухне — в общем отчёте оба (с 0).
+    # Отчёт ОБЩИЙ по компании: товар, включённый хотя бы в одну локацию,
+    # присутствует в отчёте всегда — даже если эта локация не участвовала
+    # в ревизии. Кола только на складе, Фанта только на кухне.
     org, locs, prods = org_factory(
         products=[('1001', 'Кола', 'шт'), ('1002', 'Фанта', 'шт')],
         locations=('Склад', 'Кухня'))
@@ -125,10 +126,11 @@ def test_assortment_union_across_locations(session, org_factory):
     assert report.get('Кола') == 3
     assert report.get('Фанта') == 0
 
-    # А в отчёте только по складу кухонная Фанта появляться не должна.
+    # И в отчёте только по складской ревизии кухонная Фанта тоже есть (с 0) —
+    # отчёт не делится по локациям.
     report_sklad = _read_report(app._build_revision_xlsx([r1]))
     assert report_sklad.get('Кола') == 3
-    assert 'Фанта' not in report_sklad
+    assert report_sklad.get('Фанта') == 0
 
 
 def test_category_with_nothing_counted_still_in_report(session, org_factory):

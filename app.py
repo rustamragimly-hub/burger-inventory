@@ -2510,16 +2510,18 @@ def _build_revision_xlsx(revs):
     for it in items:
         qty_by_pid[it.product_id] = qty_by_pid.get(it.product_id, 0) + (it.quantity or 0)
 
-    # Список товаров отчёта — объединение ассортиментов всех локаций ревизий
-    # И всех фактически посчитанных позиций. Посчитанное включаем ВСЕГДА, иначе
-    # товар, посчитанный на локации, но не входящий в её ассортимент (ассортимент
-    # настроен частично или менялся), выпал бы из отчёта и его подсчёт потерялся.
-    # Товар из ассортимента, который НЕ посчитали, тоже остаётся в отчёте — с
-    # остатком 0, чтобы было видно «позиция была, но её не пересчитали».
+    # Список товаров отчёта — ОБЩИЙ по компании: объединение ассортиментов ВСЕХ
+    # локаций (не только тех, что попали в эту ревизию) плюс всё фактически
+    # посчитанное. Отчёт не делится по локациям: товар, включённый хотя бы в одну
+    # локацию компании, присутствует всегда; непосчитанный — с остатком 0.
+    # Посчитанное включаем ВСЕГДА, иначе товар, посчитанный на локации, но не
+    # входящий в ассортимент (настроен частично или менялся), выпал бы из отчёта
+    # и его подсчёт потерялся.
     report_pids = set(qty_by_pid.keys())
-    if uniq_loc_ids:
+    org_loc_ids = [l.id for l in Location.query.filter_by(org_id=org.id).all()] if org else []
+    if org_loc_ids:
         report_pids |= {lp.product_id for lp in LocationProduct.query.filter(
-            LocationProduct.location_id.in_(uniq_loc_ids)
+            LocationProduct.location_id.in_(org_loc_ids)
         ).all()}
     products = {p.id: p for p in Product.query.filter(
         Product.id.in_(report_pids), Product.is_active.is_(True)
