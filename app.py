@@ -124,8 +124,10 @@ def add_owner_security_headers(response):
 @app.before_request
 def route_by_host():
     """revisi.ru/ → лендинг. revisi.ru/<path> → 301 на app.revisi.ru/<path>. app.revisi.ru/* → приложение."""
-    # /static/*, /healthz и юр-страницы работают одинаково на обоих хостах
-    if request.path.startswith('/static/') or request.path == '/healthz':
+    # /static/*, /healthz, service worker и Digital Asset Links (для TWA/Android)
+    # работают одинаково на обоих хостах и не редиректятся.
+    if (request.path.startswith('/static/') or request.path == '/healthz'
+            or request.path == '/sw.js' or request.path.startswith('/.well-known/')):
         return None
     if request.path in LEGAL_PAGES:
         return None  # обработает отдельный Flask-роут ниже
@@ -172,6 +174,31 @@ def healthz():
         return jsonify(status='error', detail=str(e)[:120]), 503
 
 
+@app.route('/sw.js')
+def service_worker():
+    """Service worker с корневого пути, чтобы его scope покрывал всё приложение
+    (файл в /static/ управлял бы только /static/). Заголовок Service-Worker-Allowed
+    разрешает корневой scope; no-cache — чтобы обновления SW доходили сразу."""
+    from flask import send_from_directory
+    resp = send_from_directory('static', 'sw.js', max_age=0)
+    resp.headers['Content-Type'] = 'application/javascript'
+    resp.headers['Service-Worker-Allowed'] = '/'
+    resp.headers['Cache-Control'] = 'no-cache, must-revalidate'
+    return resp
+
+
+@app.route('/.well-known/assetlinks.json')
+def android_assetlinks():
+    """Digital Asset Links для Google Play TWA — подтверждает, что домен
+    app.revisi.ru связан с Android-приложением, и убирает адресную строку.
+    Отпечаток подписи (sha256_cert_fingerprints) подставляется после генерации
+    keystore в PWABuilder/Bubblewrap — см. static/.well-known/assetlinks.json."""
+    from flask import send_from_directory
+    resp = send_from_directory('static/.well-known', 'assetlinks.json', max_age=0)
+    resp.headers['Content-Type'] = 'application/json'
+    return resp
+
+
 _PWA_HEAD = '''
 <link rel="icon" type="image/svg+xml" href="/static/icon.svg?v=4">
 <link rel="apple-touch-icon" href="/static/icon-180.png?v=4">
@@ -181,6 +208,13 @@ _PWA_HEAD = '''
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Revisi">
+<script>
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', function () {
+    navigator.serviceWorker.register('/sw.js?v=5').catch(function () {});
+  });
+}
+</script>
 '''
 
 _OWNER_PWA_HEAD = '''
