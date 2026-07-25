@@ -323,6 +323,28 @@ def make_session_permanent():
     session.permanent = True
 
 
+# Пути, доступные даже при истёкшей подписке — чтобы можно было продлить/выйти.
+_BILLING_ALLOWED_PREFIXES = ('/billing', '/logout', '/static/', '/healthz', '/support')
+
+
+@app.before_request
+def enforce_subscription():
+    """Автоблокировка при просрочке оплаты: пользователей компании с истёкшей
+    платной подпиской пускаем только на страницу продления /billing. Доступ
+    восстанавливается автоматически, как только подписка будет продлена."""
+    if not current_user.is_authenticated:
+        return None
+    if getattr(current_user, 'user_type', None) != 'user':
+        return None  # владельцы (owner-панель) и гости не затрагиваются
+    path = request.path
+    if any(path.startswith(p) for p in _BILLING_ALLOWED_PREFIXES):
+        return None
+    org = _current_org()
+    if org and org.subscription_expired():
+        return redirect('/billing')
+    return None
+
+
 def log_owner_action(action, target_org_id=None, target_user_id=None, details=None):
     """Записать действие владельца в audit-log. Безопасно: исключения подавляются."""
     try:
@@ -790,6 +812,46 @@ def login_required_user(fn):
             return redirect('/login')
         return fn(*args, **kwargs)
     return wrapper
+
+
+# ============== ПОДПИСКА / ОПЛАТА (КЛИЕНТ) ==============
+def _subscription_status(org):
+    """Собрать словарь статуса подписки для страницы /billing."""
+    now = datetime.utcnow()
+    plan_label = Config.PLAN_LABELS.get(org.plan, org.plan)
+    ends = org.subscription_ends_at if org.plan in Config.PAID_PLANS else (
+        org.trial_ends_at if org.plan == 'trial' else None
+    )
+    days_left = None
+    if ends:
+        days_left = (ends.date() - now.date()).days
+    expired = org.subscription_expired() or (
+        org.plan == 'trial' and org.trial_ends_at and org.trial_ends_at <= now
+    )
+    price = org.monthly_price or Config.PLAN_PRICES.get(org.plan, 0)
+    return {
+        'plan': org.plan,
+        'plan_label': plan_label,
+        'ends_str': _fmt_dt(ends, org, fmt='%d.%m.%Y') if ends else '—',
+        'days_left': days_left,
+        'expired': expired,
+        'is_paid_plan': org.plan in Config.PAID_PLANS,
+        'price': price,
+    }
+
+
+@app.route('/billing')
+@login_required_user
+def billing():
+    org = _current_org()
+    if not org:
+        return redirect('/login')
+    status = _subscription_status(org)
+    is_admin = bool(current_user.user and current_user.user.role == 'admin')
+    return render_template_string(
+        billing_html, status=status, org=org, is_admin=is_admin,
+        support_email='info@revisi.ru',
+    )
 
 
 def _get_or_create_active_revision(org_id, location_id, user_id):
@@ -3100,6 +3162,73 @@ def create_owner():
     click.echo(f'✔ OwnerUser создан: {email}')
 
 
+def _send_renewal_reminder(org, days_left):
+    """Письмо-напоминание о продлении подписки. Ссылка ведёт сразу в /billing —
+    пользователь попадает в свой аккаунт и переходит к оплате. Возвращает True,
+    если отправка инициирована (SMTP настроен)."""
+    base = app.config.get('APP_BASE_URL', 'https://app.revisi.ru').rstrip('/')
+    link = f'{base}/billing'
+    plan_label = Config.PLAN_LABELS.get(org.plan, org.plan)
+    ends = _fmt_dt(org.subscription_ends_at, org, fmt='%d.%m.%Y')
+    day_word = 'день' if days_left == 1 else ('дня' if 2 <= days_left <= 4 else 'дней')
+    subject = f'Подписка Revisi истекает через {days_left} {day_word} — продлите'
+    html = f'''
+    <div style="font-family:Arial,sans-serif;max-width:520px;margin:0 auto;color:#1a1a1a;">
+      <h2 style="color:#7c6cf0;">Пора продлить подписку Revisi</h2>
+      <p>Здравствуйте!</p>
+      <p>Подписка компании <strong>{org.name}</strong> (тариф {plan_label})
+         истекает <strong>{ends}</strong> — через {days_left} {day_word}.</p>
+      <p>Чтобы ревизии не прервались, продлите подписку заранее. Все данные и
+         история сохранены.</p>
+      <p style="text-align:center;margin:28px 0;">
+        <a href="{link}" style="background:#7c6cf0;color:#fff;text-decoration:none;
+           padding:13px 28px;border-radius:10px;font-weight:600;display:inline-block;">
+          Перейти к оплате →
+        </a>
+      </p>
+      <p style="font-size:13px;color:#666;">Или откройте ссылку вручную: {link}</p>
+      <p style="font-size:12px;color:#999;margin-top:24px;">
+        Если вы уже продлили подписку — просто проигнорируйте это письмо.
+      </p>
+    </div>'''
+    text = (
+        f'Подписка компании {org.name} (тариф {plan_label}) истекает {ends} — '
+        f'через {days_left} {day_word}. Продлите: {link}'
+    )
+    return _send_email(org.owner_email, subject, html, text)
+
+
+@app.cli.command('billing-cron')
+def billing_cron():
+    """Ежедневная задача биллинга: письма-напоминания о продлении за N дней до
+    конца подписки (по умолчанию 3 → письма в дни -3, -2, -1). Идемпотентно:
+    не больше одного письма в календарный день. Запускать раз в сутки по крону.
+    Саму блокировку доступа делать не нужно — она вычисляется на лету
+    (subscription_expired) при каждом запросе."""
+    from datetime import date
+    today = date.today()
+    orgs = Organization.query.filter(
+        Organization.plan.in_(Config.PAID_PLANS),
+        Organization.subscription_ends_at.isnot(None),
+    ).all()
+    reminded = skipped = 0
+    for org in orgs:
+        days_left = (org.subscription_ends_at.date() - today).days
+        if not (1 <= days_left <= Config.RENEWAL_REMINDER_DAYS):
+            continue
+        if org.renewal_reminder_last_sent == today:
+            skipped += 1
+            continue  # уже отправляли сегодня
+        if _send_renewal_reminder(org, days_left):
+            org.renewal_reminder_last_sent = today
+            reminded += 1
+        else:
+            click.echo(f'  ⚠ SMTP не настроен — письмо для {org.owner_email} не отправлено')
+    if reminded:
+        db.session.commit()
+    click.echo(f'✔ billing-cron: напоминаний отправлено {reminded}, пропущено (уже слали сегодня) {skipped}')
+
+
 @app.cli.command('seed-smoky')
 def seed_smoky():
     """Создать организацию «Смоки Бар МВЛ (международный)» и импортировать каталог.
@@ -3648,7 +3777,7 @@ def owner_dashboard():
 
     # Платящих
     paying_orgs = Organization.query.filter(
-        Organization.plan.in_(('pro', 'business')),
+        Organization.plan.in_(Config.PAID_PLANS),
         Organization.subscription_ends_at > now,
     ).count()
 
@@ -3693,7 +3822,7 @@ def owner_dashboard():
 
     # MRR — сумма monthly_price для платящих
     mrr_q = db.session.query(db.func.coalesce(db.func.sum(Organization.monthly_price), 0)).filter(
-        Organization.plan.in_(('pro', 'business')),
+        Organization.plan.in_(Config.PAID_PLANS),
         Organization.subscription_ends_at > now,
     ).scalar() or 0
     mrr = int(mrr_q)
@@ -3703,7 +3832,7 @@ def owner_dashboard():
         (Organization.plan != 'trial') | (Organization.trial_ends_at.isnot(None) & (Organization.trial_ends_at <= now))
     ).filter(Organization.created_at < now - timedelta(days=14)).count()
     converted = Organization.query.filter(
-        Organization.plan.in_(('pro', 'business'))
+        Organization.plan.in_(Config.PAID_PLANS)
     ).count()
     conv_pct = int((converted / finished_trials_total) * 100) if finished_trials_total else 0
 
@@ -3785,7 +3914,7 @@ def owner_orgs():
 
         if org.plan == 'trial' and org.trial_ends_at:
             ends_str = org.trial_ends_at.strftime('%d.%m.%Y')
-        elif org.plan in ('pro', 'business') and org.subscription_ends_at:
+        elif org.plan in Config.PAID_PLANS and org.subscription_ends_at:
             ends_str = org.subscription_ends_at.strftime('%d.%m.%Y')
         else:
             ends_str = '—'
@@ -3838,15 +3967,21 @@ def owner_set_plan(org_id):
         flash('Компания не найдена.', 'error')
         return redirect('/owner/orgs')
     plan = (request.form.get('plan') or '').lower()
-    if plan not in ('free', 'trial', 'pro', 'business'):
+    if plan not in ('free', 'trial') and plan not in Config.PAID_PLANS:
         flash('Неизвестный тариф.', 'error')
         return redirect('/owner/orgs')
     org.plan = plan
-    if plan in ('pro', 'business'):
-        org.subscription_ends_at = datetime.utcnow() + timedelta(days=30)
+    if plan in Config.PAID_PLANS:
+        # Продлеваем оплаченный период и сбрасываем маркер напоминаний, чтобы
+        # цикл писем начался заново перед следующим истечением.
+        org.subscription_ends_at = datetime.utcnow() + timedelta(days=Config.SUBSCRIPTION_DAYS)
+        org.renewal_reminder_last_sent = None
+        if not org.monthly_price:
+            org.monthly_price = Config.PLAN_PRICES.get(plan, 0)
     try:
         db.session.commit()
-        flash(f'Тариф компании «{org.name}» изменён на {plan.upper()}.', 'success')
+        _label = Config.PLAN_LABELS.get(plan, plan.upper())
+        flash(f'Тариф компании «{org.name}» изменён на {_label}.', 'success')
     except Exception as e:
         db.session.rollback()
         flash(f'Ошибка: {e}', 'error')
@@ -3981,7 +4116,7 @@ def owner_org_detail(org_id):
 
     if org.plan == 'trial' and org.trial_ends_at:
         ends_str = org.trial_ends_at.strftime('%d.%m.%Y')
-    elif org.plan in ('pro', 'business') and org.subscription_ends_at:
+    elif org.plan in Config.PAID_PLANS and org.subscription_ends_at:
         ends_str = org.subscription_ends_at.strftime('%d.%m.%Y')
     else:
         ends_str = '—'
@@ -4267,7 +4402,7 @@ def owner_alerts():
 
     paid_expiring = []
     for org in Organization.query.filter(
-        Organization.plan.in_(('pro', 'business')),
+        Organization.plan.in_(Config.PAID_PLANS),
         Organization.subscription_ends_at.isnot(None),
         Organization.subscription_ends_at > now,
         Organization.subscription_ends_at <= in_7,
@@ -4300,7 +4435,7 @@ def owner_broadcast():
         if audience == 'trial':
             q = q.filter(Organization.plan == 'trial', Organization.trial_ends_at > now)
         elif audience == 'paid':
-            q = q.filter(Organization.plan.in_(('pro', 'business')))
+            q = q.filter(Organization.plan.in_(Config.PAID_PLANS))
         elif audience == 'inactive14':
             fourteen_ago = now - timedelta(days=14)
             inactive_ids = []
@@ -5113,6 +5248,83 @@ function filterRows(){
   });
 }
 </script>
+</body>
+</html>'''
+
+
+billing_html = '''<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Подписка — Revisi</title>
+{{ pwa_head|safe }}
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
+<style>''' + _BASE_CSS + '''
+.bill-status { border-radius: 14px; padding: 18px 20px; margin-bottom: 20px; font-size: 14px; line-height: 1.5; }
+.bill-status.ok { background: rgba(16,185,129,0.10); border: 1px solid rgba(16,185,129,0.35); color: #6ee7b7; }
+.bill-status.warn { background: rgba(251,146,60,0.10); border: 1px solid rgba(251,146,60,0.40); color: #fdba74; }
+.bill-status.bad { background: rgba(239,68,68,0.10); border: 1px solid rgba(239,68,68,0.40); color: #fca5a5; }
+.bill-row { display: flex; justify-content: space-between; gap: 12px; padding: 9px 0; border-bottom: 1px solid rgba(255,255,255,0.07); font-size: 14px; }
+.bill-row:last-child { border-bottom: none; }
+.bill-row .k { color: rgba(255,255,255,0.5); }
+.bill-row .v { color: #fff; font-weight: 600; }
+.bill-note { font-size: 12px; color: rgba(255,255,255,0.45); line-height: 1.6; margin-top: 16px; text-align: center; }
+.bill-links { text-align: center; margin-top: 22px; }
+.bill-links a { color: rgba(255,255,255,0.55); font-size: 13px; text-decoration: none; margin: 0 10px; }
+.bill-links a:hover { color: #fff; }
+</style>
+</head>
+<body>
+<div class="blob blob-1"></div>
+<div class="blob blob-2"></div>
+<div class="blob blob-3"></div>
+<div class="card">
+  <div class="icon-box">{{ icon('shop', 30)|safe }}</div>
+  <div class="title">Подписка</div>
+  <div class="subtitle">{{ org.name }}</div>
+
+  {% if status.expired %}
+  <div class="bill-status bad">
+    <strong>Подписка истекла.</strong> Доступ к приложению приостановлен.
+    Продлите тариф, чтобы снова начать ревизии — все данные сохранены.
+  </div>
+  {% elif status.days_left is not none and status.days_left <= 3 %}
+  <div class="bill-status warn">
+    <strong>Подписка истекает через {{ status.days_left }} дн.</strong>
+    Продлите заранее, чтобы работа не прерывалась.
+  </div>
+  {% else %}
+  <div class="bill-status ok">
+    <strong>Подписка активна.</strong> Всё работает в штатном режиме.
+  </div>
+  {% endif %}
+
+  <div class="bill-row"><span class="k">Тариф</span><span class="v">{{ status.plan_label }}</span></div>
+  {% if status.price %}<div class="bill-row"><span class="k">Стоимость</span><span class="v">{{ status.price }} ₽/мес</span></div>{% endif %}
+  <div class="bill-row"><span class="k">{{ 'Действует до' if not status.expired else 'Истекла' }}</span><span class="v">{{ status.ends_str }}</span></div>
+  {% if status.days_left is not none and not status.expired %}
+  <div class="bill-row"><span class="k">Осталось</span><span class="v">{{ status.days_left }} дн.</span></div>
+  {% endif %}
+
+  <!-- Кнопка оплаты. Онлайн-приём (ЮKassa) подключается сюда: заменить href
+       на создание платежа /billing/pay. Пока — связь с поддержкой. -->
+  <a href="mailto:{{ support_email }}?subject=Продление подписки Revisi ({{ org.name }})"
+     class="btn-primary" style="display:block;text-align:center;text-decoration:none;margin-top:22px;">
+    Продлить подписку
+  </a>
+
+  <div class="bill-note">
+    Онлайн-оплата картой скоро будет доступна прямо здесь.
+    Пока для продления напишите нам — активируем в течение дня.
+  </div>
+
+  <div class="bill-links">
+    {% if not status.expired %}<a href="/">← В приложение</a>{% endif %}
+    <a href="/support">Поддержка</a>
+    <a href="/logout">Выйти</a>
+  </div>
+</div>
 </body>
 </html>'''
 
@@ -7647,6 +7859,7 @@ body {
 }
 .badge-free { background: rgba(100,116,139,0.3); color: #94a3b8; }
 .badge-trial { background: rgba(124,108,240,0.3); color: #a5b4fc; }
+.badge-start { background: rgba(56,189,248,0.3); color: #7dd3fc; }
 .badge-pro { background: rgba(16,185,129,0.3); color: #6ee7b7; }
 .badge-business { background: rgba(251,191,36,0.3); color: #fcd34d; }
 .recent-table { width: 100%; border-collapse: collapse; font-size: 14px; }
@@ -8652,6 +8865,22 @@ owner_org_detail_html = (
     </svg>
   </div>
 
+  <!-- Тариф -->
+  <div class="section-card">
+    <div class="section-title">🎚 Тариф</div>
+    <form method="post" action="/owner/orgs/{{ org.id }}/set_plan" class="input-row">
+      <select name="plan" class="grow" style="background:rgba(0,0,0,0.3);border:1px solid rgba(255,255,255,0.15);border-radius:8px;padding:9px 12px;color:#fff;font-family:inherit;font-size:14px;">
+        <option value="free" {% if org.plan=='free' %}selected{% endif %}>Free — 0 ₽</option>
+        <option value="trial" {% if org.plan=='trial' %}selected{% endif %}>Trial (14 дней)</option>
+        <option value="start" {% if org.plan=='start' %}selected{% endif %}>Старт — 1 290 ₽</option>
+        <option value="pro" {% if org.plan=='pro' %}selected{% endif %}>Сеть — 2 490 ₽</option>
+        <option value="business" {% if org.plan=='business' %}selected{% endif %}>Бизнес — 5 900 ₽</option>
+      </select>
+      <button type="submit" class="btn-primary-sm">Применить</button>
+    </form>
+    <div style="font-size:12px;color:rgba(255,255,255,0.5);">Платный тариф ставит подписку на {{ 30 }} дней вперёд и подставляет цену. Продление — тем же действием.</div>
+  </div>
+
   <!-- Цена подписки -->
   <div class="section-card">
     <div class="section-title">💰 Цена подписки</div>
@@ -8659,7 +8888,7 @@ owner_org_detail_html = (
       <input type="number" inputmode="numeric" pattern="[0-9]*" name="monthly_price" min="0" step="100" value="{{ org.monthly_price or 0 }}" class="grow" placeholder="Стоимость в ₽">
       <button type="submit" class="btn-primary-sm">Сохранить</button>
     </form>
-    <div style="font-size:12px;color:rgba(255,255,255,0.5);">Используется в расчёте MRR на дашборде.</div>
+    <div style="font-size:12px;color:rgba(255,255,255,0.5);">Ручная корректировка цены (для доплат за точки/MRR).</div>
   </div>
 
   <!-- Feature-флаги -->
@@ -9262,6 +9491,9 @@ with app.app_context():
             ))
             conn.execute(db.text(
                 "ALTER TABLE organizations ADD COLUMN IF NOT EXISTS email_verify_attempts INTEGER DEFAULT 0"
+            ))
+            conn.execute(db.text(
+                "ALTER TABLE organizations ADD COLUMN IF NOT EXISTS renewal_reminder_last_sent DATE"
             ))
             # 2FA для owner_users
             conn.execute(db.text(

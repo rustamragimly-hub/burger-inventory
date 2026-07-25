@@ -77,11 +77,43 @@ class Config:
     # Trial период (дней)
     TRIAL_DAYS = 14
 
-    # Лимиты FREE тарифа
-    FREE_MAX_USERS = 3
-    FREE_MAX_PRODUCTS = 100
+    # Лимиты FREE тарифа — синхронизированы с лендингом (тариф Free):
+    # 1 точка · 1 пользователь · до 150 товаров · история 30 дней.
+    FREE_MAX_USERS = 1
+    FREE_MAX_PRODUCTS = 150
     FREE_MAX_LOCATIONS = 1
-    FREE_HISTORY_DAYS = 7
+    FREE_HISTORY_DAYS = 30
+
+    # ── Тарифная сетка (синхронизировано с лендингом) ────────────────
+    # Коды планов: free / trial / start (Старт) / pro (Сеть) / business (Бизнес).
+    # 'pro' исторически = тариф «Сеть» (популярный, 2–5 точек).
+    PAID_PLANS = ('start', 'pro', 'business')
+
+    PLAN_LABELS = {
+        'free': 'Free', 'trial': 'Trial',
+        'start': 'Старт', 'pro': 'Сеть', 'business': 'Бизнес',
+    }
+
+    # Базовая цена тарифа в ₽/мес (доплаты за точку считаются отдельно).
+    PLAN_PRICES = {'start': 1290, 'pro': 2490, 'business': 5900}
+
+    # Доплата за точку сверх включённого в тариф (₽/мес).
+    PLAN_EXTRA_POINT_PRICE = {'pro': 490, 'business': 390}
+
+    # Лимиты по тарифам: locations / users (None = без лимита).
+    PLAN_LIMITS = {
+        'free':     {'locations': 1,  'users': 1},
+        'trial':    {'locations': 5,  'users': 15},
+        'start':    {'locations': 1,  'users': 5},
+        'pro':      {'locations': 5,  'users': 15},
+        'business': {'locations': 20, 'users': None},
+    }
+
+    # Сколько дней подписка длится после оплаты/установки платного тарифа.
+    SUBSCRIPTION_DAYS = 30
+
+    # За сколько дней до конца подписки начинать слать напоминания (включительно).
+    RENEWAL_REMINDER_DAYS = 3
 
     # Защита от брутфорса
     MAX_LOGIN_ATTEMPTS = 5

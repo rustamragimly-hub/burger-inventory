@@ -24,10 +24,13 @@ class Organization(db.Model):
     email_verify_expires = db.Column(db.DateTime, nullable=True)
     email_verify_attempts = db.Column(db.Integer, default=0)
 
-    # Тариф: 'free', 'trial', 'pro', 'business'
+    # Тариф: 'free', 'trial', 'start' (Старт), 'pro' (Сеть), 'business' (Бизнес)
     plan = db.Column(db.String(20), default='trial')
     trial_ends_at = db.Column(db.DateTime, nullable=True)
     subscription_ends_at = db.Column(db.DateTime, nullable=True)
+    # Дата последней отправки письма-напоминания о продлении (идемпотентность
+    # ежедневной рассылки — не больше одного письма в календарный день).
+    renewal_reminder_last_sent = db.Column(db.Date, nullable=True)
 
     is_blocked = db.Column(db.Boolean, default=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
@@ -56,11 +59,24 @@ class Organization(db.Model):
     products = db.relationship('Product', backref='organization', lazy=True, cascade='all, delete-orphan')
     revisions = db.relationship('Revision', backref='organization', lazy=True, cascade='all, delete-orphan')
 
+    # Платные тарифы (кроме free/trial). Держим здесь, чтобы и модель, и app
+    # ссылались на один список.
+    PAID_PLANS = ('start', 'pro', 'business')
+
     def is_trial_active(self):
         return self.plan == 'trial' and self.trial_ends_at and self.trial_ends_at > datetime.utcnow()
 
     def is_paid(self):
-        return self.plan in ('pro', 'business') and self.subscription_ends_at and self.subscription_ends_at > datetime.utcnow()
+        return self.plan in self.PAID_PLANS and self.subscription_ends_at and self.subscription_ends_at > datetime.utcnow()
+
+    def subscription_expired(self):
+        """True, если платный тариф, но оплаченный период уже закончился.
+        Именно это состояние включает автоблокировку доступа."""
+        return (
+            self.plan in self.PAID_PLANS
+            and self.subscription_ends_at is not None
+            and self.subscription_ends_at <= datetime.utcnow()
+        )
 
     def has_premium_access(self):
         return self.is_trial_active() or self.is_paid()
