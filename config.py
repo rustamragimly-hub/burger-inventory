@@ -69,6 +69,13 @@ class Config:
     # Базовый URL для ссылок в письмах (если приложение за прокси/доменом)
     APP_BASE_URL = os.environ.get('APP_BASE_URL', 'https://app.revisi.ru')
 
+    # ── ЮKassa (онлайн-приём оплаты) ─────────────────────────────────
+    # Пока ключи не заданы — онлайн-оплата спит, приложение работает как есть.
+    # shopId и секретный ключ берутся из личного кабинета ЮKassa.
+    # Вебхук об успешной оплате указывать в ЛК: {APP_BASE_URL}/billing/webhook
+    YOOKASSA_SHOP_ID = os.environ.get('YOOKASSA_SHOP_ID') or None
+    YOOKASSA_SECRET_KEY = os.environ.get('YOOKASSA_SECRET_KEY') or None
+
     # Жёсткий потолок на размер любого uplaod'а (импорт Excel, шаблоны отчётов).
     # Без этого werkzeug примет хоть гигабайт и положит память воркера. 16 МБ хватает
     # с большим запасом — наши прайс-листы максимум сотни КБ, шаблоны единицы МБ.

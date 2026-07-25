@@ -130,3 +130,72 @@ def test_free_plan_gets_no_reminder(session, org_factory, monkeypatch):
     _paid_org(org_factory, days_from_now=2, plan='free')
     sent, _ = _run_cron(monkeypatch)
     assert sent == []
+
+
+# ─────────────────────── ЮKassa (каркас) ───────────────────────
+
+def test_pay_disabled_without_keys(session, org_factory):
+    org = _paid_org(org_factory, days_from_now=5)
+    user = _make_user(org)
+    client = app.app.test_client()
+    _login(client, user)
+    resp = client.post('/billing/pay', follow_redirects=False)
+    assert resp.status_code == 302
+    assert '/billing' in resp.headers.get('Location', '')
+
+
+def test_webhook_disabled_without_keys(session, org_factory):
+    client = app.app.test_client()
+    resp = client.post('/billing/webhook', json={'event': 'payment.succeeded'})
+    assert resp.status_code == 503
+
+
+class _FakePayment:
+    def __init__(self, org_id, plan='pro', status='succeeded', paid=True):
+        self.status = status
+        self.paid = paid
+        self.metadata = {'org_id': str(org_id), 'plan': plan}
+
+
+def _fake_yk(payment):
+    class _YK:
+        class Payment:
+            @staticmethod
+            def find_one(pid):
+                return payment
+    return _YK
+
+
+def test_webhook_extends_subscription_and_is_idempotent(session, org_factory, monkeypatch):
+    org = _paid_org(org_factory, days_from_now=1)  # почти истекла
+    payment = _FakePayment(org.id, plan='pro')
+    monkeypatch.setattr(app, '_yookassa_configure', lambda: _fake_yk(payment))
+
+    client = app.app.test_client()
+    body = {'event': 'payment.succeeded', 'object': {'id': 'pay_777'}}
+
+    r1 = client.post('/billing/webhook', json=body)
+    assert r1.status_code == 200
+    db.session.refresh(org)
+    first_end = org.subscription_ends_at
+    # продлили примерно на 30 дней вперёд от «сейчас»
+    assert (first_end - datetime.utcnow()).days >= 29
+    assert (org.features or {}).get('last_payment_id') == 'pay_777'
+
+    # повторный тот же платёж — подписку НЕ продлевает второй раз
+    r2 = client.post('/billing/webhook', json=body)
+    assert r2.status_code == 200
+    db.session.refresh(org)
+    assert org.subscription_ends_at == first_end
+
+
+def test_webhook_ignores_unpaid(session, org_factory, monkeypatch):
+    org = _paid_org(org_factory, days_from_now=-1)  # истекла
+    before = org.subscription_ends_at
+    payment = _FakePayment(org.id, status='pending', paid=False)
+    monkeypatch.setattr(app, '_yookassa_configure', lambda: _fake_yk(payment))
+    client = app.app.test_client()
+    resp = client.post('/billing/webhook', json={'event': 'payment.succeeded', 'object': {'id': 'p1'}})
+    assert resp.status_code == 200
+    db.session.refresh(org)
+    assert org.subscription_ends_at == before  # не продлили

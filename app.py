@@ -850,8 +850,109 @@ def billing():
     is_admin = bool(current_user.user and current_user.user.role == 'admin')
     return render_template_string(
         billing_html, status=status, org=org, is_admin=is_admin,
-        support_email='info@revisi.ru',
+        support_email='info@revisi.ru', yookassa_enabled=_yookassa_enabled(),
     )
+
+
+def _yookassa_enabled():
+    return bool(app.config.get('YOOKASSA_SHOP_ID') and app.config.get('YOOKASSA_SECRET_KEY'))
+
+
+def _yookassa_configure():
+    """Ленивая настройка SDK ЮKassa. Возвращает модуль yookassa или None, если
+    ключи не заданы либо пакет не установлен — тогда онлайн-оплата просто спит."""
+    if not _yookassa_enabled():
+        return None
+    try:
+        import yookassa
+        yookassa.Configuration.account_id = app.config['YOOKASSA_SHOP_ID']
+        yookassa.Configuration.secret_key = app.config['YOOKASSA_SECRET_KEY']
+        return yookassa
+    except ImportError:
+        print('⚠️  Пакет yookassa не установлен — онлайн-оплата недоступна')
+        return None
+
+
+@app.route('/billing/pay', methods=['POST'])
+@login_required_user
+def billing_pay():
+    """Создать платёж в ЮKassa и увести пользователя на страницу оплаты."""
+    org = _current_org()
+    if not org:
+        return redirect('/login')
+    yk = _yookassa_configure()
+    if not yk:
+        flash('Онлайн-оплата пока не настроена. Напишите в поддержку — активируем вручную.', 'error')
+        return redirect('/billing')
+    plan = org.plan if org.plan in Config.PAID_PLANS else 'start'
+    price = org.monthly_price or Config.PLAN_PRICES.get(plan, 0)
+    if price <= 0:
+        flash('Не задана цена тарифа. Обратитесь в поддержку.', 'error')
+        return redirect('/billing')
+    import uuid
+    base = app.config.get('APP_BASE_URL', 'https://app.revisi.ru').rstrip('/')
+    try:
+        payment = yk.Payment.create({
+            'amount': {'value': f'{price}.00', 'currency': 'RUB'},
+            'confirmation': {'type': 'redirect', 'return_url': f'{base}/billing'},
+            'capture': True,
+            'description': f'Подписка Revisi «{org.name}», тариф {Config.PLAN_LABELS.get(plan, plan)}',
+            'metadata': {'org_id': str(org.id), 'plan': plan},
+        }, str(uuid.uuid4()))  # ключ идемпотентности — защита от двойного платежа
+        return redirect(payment.confirmation.confirmation_url)
+    except Exception as e:
+        print(f'⚠️  ЮKassa: не удалось создать платёж для org={org.id}: {e}')
+        flash('Не удалось начать оплату. Попробуйте позже или напишите в поддержку.', 'error')
+        return redirect('/billing')
+
+
+@app.route('/billing/webhook', methods=['POST'])
+def billing_webhook():
+    """Уведомление ЮKassa об оплате → продление подписки.
+    Тело запроса НЕ доверяем: перепроверяем платёж через API ЮKassa и сверяем
+    статус. Идемпотентно: один и тот же платёж не продлевает подписку дважды."""
+    yk = _yookassa_configure()
+    if not yk:
+        return '', 503
+    event = request.get_json(force=True, silent=True) or {}
+    if event.get('event') != 'payment.succeeded':
+        return '', 200  # прочие события нам не интересны
+    obj = event.get('object') or {}
+    pay_id = obj.get('id')
+    if not pay_id:
+        return '', 400
+    try:
+        payment = yk.Payment.find_one(pay_id)  # перепроверка на стороне ЮKassa
+    except Exception as e:
+        print(f'⚠️  ЮKassa webhook: не удалось проверить платёж {pay_id}: {e}')
+        return '', 400
+    if getattr(payment, 'status', None) != 'succeeded' or not getattr(payment, 'paid', False):
+        return '', 200
+    meta = getattr(payment, 'metadata', None) or {}
+    try:
+        org_id = int(meta.get('org_id'))
+    except (TypeError, ValueError):
+        return '', 200
+    org = db.session.get(Organization, org_id)
+    if not org:
+        return '', 200
+    feats = dict(org.features or {})
+    if feats.get('last_payment_id') == pay_id:
+        return '', 200  # этот платёж уже обработан
+    plan = meta.get('plan')
+    if plan in Config.PAID_PLANS:
+        org.plan = plan
+    now = datetime.utcnow()
+    base_from = org.subscription_ends_at if (org.subscription_ends_at and org.subscription_ends_at > now) else now
+    org.subscription_ends_at = base_from + timedelta(days=Config.SUBSCRIPTION_DAYS)
+    org.renewal_reminder_last_sent = None
+    feats['last_payment_id'] = pay_id
+    org.features = feats
+    if not org.monthly_price and plan:
+        org.monthly_price = Config.PLAN_PRICES.get(plan, 0)
+    db.session.commit()
+    print(f'✅ ЮKassa: подписка org={org.id} продлена до {org.subscription_ends_at:%Y-%m-%d}')
+    return '', 200
 
 
 def _get_or_create_active_revision(org_id, location_id, user_id):
@@ -5307,17 +5408,28 @@ billing_html = '''<!DOCTYPE html>
   <div class="bill-row"><span class="k">Осталось</span><span class="v">{{ status.days_left }} дн.</span></div>
   {% endif %}
 
-  <!-- Кнопка оплаты. Онлайн-приём (ЮKassa) подключается сюда: заменить href
-       на создание платежа /billing/pay. Пока — связь с поддержкой. -->
+  {% if yookassa_enabled %}
+  <!-- Онлайн-оплата картой через ЮKassa -->
+  <form method="post" action="/billing/pay" style="margin-top:22px;">
+    <button type="submit" class="btn-primary" style="display:block;width:100%;text-align:center;">
+      Оплатить картой{% if status.price %} · {{ status.price }} ₽{% endif %}
+    </button>
+  </form>
+  <div class="bill-note">
+    Оплата проходит на защищённой странице ЮKassa. Карта нигде у нас не сохраняется.
+    После оплаты доступ откроется автоматически.
+  </div>
+  {% else %}
+  <!-- Онлайн-оплата ещё не подключена — фолбэк на поддержку -->
   <a href="mailto:{{ support_email }}?subject=Продление подписки Revisi ({{ org.name }})"
      class="btn-primary" style="display:block;text-align:center;text-decoration:none;margin-top:22px;">
     Продлить подписку
   </a>
-
   <div class="bill-note">
     Онлайн-оплата картой скоро будет доступна прямо здесь.
     Пока для продления напишите нам — активируем в течение дня.
   </div>
+  {% endif %}
 
   <div class="bill-links">
     {% if not status.expired %}<a href="/">← В приложение</a>{% endif %}
