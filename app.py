@@ -763,11 +763,14 @@ def reset_password(token):
 def login():
     error = None
     ip = request.remote_addr or 'unknown'
+    # Значения формы для повторного показа — чтобы при ошибке ничего не сбрасывалось.
+    form = {'email': '', 'username': '', 'password': ''}
 
     if request.method == 'POST':
         email = (request.form.get('email') or '').strip().lower()
         username = (request.form.get('username') or '').strip()
         password = request.form.get('password') or ''
+        form = {'email': email, 'username': username, 'password': password}
 
         # Защита от брутфорса
         if count_recent_failed_attempts(ip) >= Config.MAX_LOGIN_ATTEMPTS:
@@ -776,7 +779,7 @@ def login():
                 f'Попробуйте через {Config.LOGIN_LOCKOUT_MINUTES} минут.'
             )
             return render_template_string(
-                login_html, error=error,
+                login_html, error=error, form=form,
                 now=datetime.now().strftime('%d.%m %H:%M'),
             )
 
@@ -804,7 +807,7 @@ def login():
             return redirect('/revision')
 
     return render_template_string(
-        login_html, error=error,
+        login_html, error=error, form=form,
         now=datetime.now().strftime('%d.%m %H:%M'),
     )
 
@@ -5249,6 +5252,14 @@ login_html = '''<!DOCTYPE html>
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
 <style>''' + _BASE_CSS + '''
 .version { text-align: center; color: rgba(255,255,255,0.2); font-size: 11px; margin-top: 20px; }
+.pw-wrap { position: relative; }
+.pw-wrap .input { padding-right: 78px; }
+.pw-toggle {
+  position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
+  background: none; border: none; color: #a78bfa; cursor: pointer;
+  font-size: 13px; font-weight: 600; padding: 6px 8px; font-family: inherit;
+}
+.pw-toggle:hover { color: #c4b5fd; }
 </style>
 </head>
 <body>
@@ -5263,19 +5274,30 @@ login_html = '''<!DOCTYPE html>
   <form method="post">
     <div class="form-group">
       <label>Email компании</label>
-      <input class="input" type="email" name="email" required autocomplete="email" placeholder="company@example.com">
+      <input class="input" type="email" name="email" required autocomplete="email" placeholder="company@example.com" value="{{ form.email }}">
       <div class="hint">Общий email компании (один на всех сотрудников). Администратор указывает свой email, оператор — тот же email, который дал ему администратор.</div>
     </div>
     <div class="form-group">
       <label>Логин</label>
-      <input class="input" type="text" name="username" required autocomplete="username" placeholder="Введите логин">
+      <input class="input" type="text" name="username" required autocomplete="username" placeholder="Введите логин" value="{{ form.username }}">
     </div>
     <div class="form-group">
       <label>Пароль</label>
-      <input class="input" type="password" name="password" required autocomplete="current-password" placeholder="Введите пароль">
+      <div class="pw-wrap">
+        <input class="input" type="password" name="password" id="login-pw" required autocomplete="current-password" placeholder="Введите пароль" value="{{ form.password }}">
+        <button type="button" class="pw-toggle" data-target="login-pw" onclick="togglePw(this)">Показать</button>
+      </div>
     </div>
     <button class="btn-primary" type="submit">Войти →</button>
   </form>
+  <script>
+  function togglePw(btn){
+    var input = document.getElementById(btn.dataset.target);
+    if (!input) return;
+    if (input.type === 'password') { input.type = 'text'; btn.textContent = 'Скрыть'; }
+    else { input.type = 'password'; btn.textContent = 'Показать'; }
+  }
+  </script>
   <div class="bottom-link" style="margin-top:14px;">
     <a class="link" href="/forgot">Забыли пароль?</a>
   </div>
