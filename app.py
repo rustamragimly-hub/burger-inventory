@@ -505,6 +505,9 @@ def index():
 @app.route('/register', methods=['GET', 'POST'])
 def register():
     error = None
+    # Значения формы для повторного показа — чтобы при ошибке ничего не сбрасывалось.
+    form = {'company': '', 'email': '', 'username': '',
+            'password': '', 'password2': '', 'pos_system': '', 'terms': False}
     if request.method == 'POST':
         company = (request.form.get('company') or '').strip()
         email = (request.form.get('email') or '').strip().lower()
@@ -513,6 +516,11 @@ def register():
         password2 = request.form.get('password2') or ''
         terms = request.form.get('terms')
         pos_system = (request.form.get('pos_system') or '').strip().lower()
+        # Запоминаем введённое (в т.ч. выбранную учётную систему и галочку),
+        # чтобы вернуть в форму при ошибке валидации.
+        form = {'company': company, 'email': email, 'username': username,
+                'password': password, 'password2': password2,
+                'pos_system': pos_system, 'terms': bool(terms)}
         if pos_system not in ('iiko', 'rkeeper', '1c', 'excel', 'other'):
             pos_system = None
 
@@ -567,7 +575,7 @@ def register():
                 db.session.rollback()
                 error = f'Ошибка регистрации: {e}'
 
-    return render_template_string(register_html, error=error)
+    return render_template_string(register_html, error=error, form=form)
 
 
 def _send_verify_code_email(email, company, code):
@@ -4903,7 +4911,16 @@ register_html = '''<!DOCTYPE html>
 <title>Регистрация компании — Revisi</title>
 {{ pwa_head|safe }}
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
-<style>''' + _BASE_CSS + '''</style>
+<style>''' + _BASE_CSS + '''
+.pw-wrap { position: relative; }
+.pw-wrap .input { padding-right: 78px; }
+.pw-toggle {
+  position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
+  background: none; border: none; color: #a78bfa; cursor: pointer;
+  font-size: 13px; font-weight: 600; padding: 6px 8px; font-family: inherit;
+}
+.pw-toggle:hover { color: #c4b5fd; }
+</style>
 </head>
 <body>
 <div class="blob blob-1"></div>
@@ -4917,43 +4934,57 @@ register_html = '''<!DOCTYPE html>
   <form method="post">
     <div class="form-group">
       <label>Название компании</label>
-      <input class="input" type="text" name="company" required placeholder="ООО Ромашка">
+      <input class="input" type="text" name="company" required placeholder="ООО Ромашка" value="{{ form.company }}">
     </div>
     <div class="form-group">
       <label>Учётная система</label>
       <select class="input" name="pos_system">
         <option value="">— выберите (необязательно) —</option>
-        <option value="iiko">iiko</option>
-        <option value="rkeeper">R-Keeper / StoreHouse</option>
-        <option value="1c">1С</option>
-        <option value="excel">Только Excel / без системы</option>
-        <option value="other">Другая</option>
+        <option value="iiko" {% if form.pos_system == 'iiko' %}selected{% endif %}>iiko</option>
+        <option value="rkeeper" {% if form.pos_system == 'rkeeper' %}selected{% endif %}>R-Keeper / StoreHouse</option>
+        <option value="1c" {% if form.pos_system == '1c' %}selected{% endif %}>1С</option>
+        <option value="excel" {% if form.pos_system == 'excel' %}selected{% endif %}>Только Excel / без системы</option>
+        <option value="other" {% if form.pos_system == 'other' %}selected{% endif %}>Другая</option>
       </select>
       <div class="hint">Для iiko товары и бланк отчёта загрузятся автоматически из вашей выгрузки</div>
     </div>
     <div class="form-group">
       <label>Email владельца</label>
-      <input class="input" type="email" name="email" required placeholder="owner@example.com">
+      <input class="input" type="email" name="email" required placeholder="owner@example.com" value="{{ form.email }}">
     </div>
     <div class="form-group">
       <label>Ваш логин</label>
-      <input class="input" type="text" name="username" required placeholder="admin">
+      <input class="input" type="text" name="username" required placeholder="admin" value="{{ form.username }}">
       <div class="hint">Этот логин вы будете использовать для входа</div>
     </div>
     <div class="form-group">
       <label>Пароль</label>
-      <input class="input" type="password" name="password" required minlength="6" placeholder="Минимум 6 символов">
+      <div class="pw-wrap">
+        <input class="input" type="password" name="password" id="reg-pw1" required minlength="6" placeholder="Минимум 6 символов" value="{{ form.password }}">
+        <button type="button" class="pw-toggle" data-target="reg-pw1" onclick="togglePw(this)">Показать</button>
+      </div>
     </div>
     <div class="form-group">
       <label>Повторите пароль</label>
-      <input class="input" type="password" name="password2" required minlength="6" placeholder="Ещё раз">
+      <div class="pw-wrap">
+        <input class="input" type="password" name="password2" id="reg-pw2" required minlength="6" placeholder="Ещё раз" value="{{ form.password2 }}">
+        <button type="button" class="pw-toggle" data-target="reg-pw2" onclick="togglePw(this)">Показать</button>
+      </div>
     </div>
     <label class="checkbox-row">
-      <input type="checkbox" name="terms" value="1" required>
+      <input type="checkbox" name="terms" value="1" required {% if form.terms %}checked{% endif %}>
       <span>Я принимаю <a class="link" href="/terms" target="_blank">договор-оферту</a> и даю <a class="link" href="/consent" target="_blank">согласие на обработку персональных данных</a> в соответствии с <a class="link" href="/privacy" target="_blank">Политикой конфиденциальности</a></span>
     </label>
     <button class="btn-primary" type="submit">Создать аккаунт →</button>
   </form>
+  <script>
+  function togglePw(btn){
+    var input = document.getElementById(btn.dataset.target);
+    if (!input) return;
+    if (input.type === 'password') { input.type = 'text'; btn.textContent = 'Скрыть'; }
+    else { input.type = 'password'; btn.textContent = 'Показать'; }
+  }
+  </script>
   <div class="bottom-link">
     Уже есть аккаунт? <a class="link" href="/login">Войти</a>
   </div>
