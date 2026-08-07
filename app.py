@@ -5467,7 +5467,10 @@ discrepancy_html = '''<!DOCTYPE html>
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
-html, body { max-width: 100%; overflow-x: hidden; }
+/* overflow-x: clip (а не hidden) режет горизонтальную прокрутку, но не создаёт
+   scroll-контейнер — иначе ломается position: sticky у шапки (бургер уезжал
+   вверх при прокрутке на мобиле). */
+html, body { max-width: 100%; overflow-x: clip; }
 body { font-family: 'Outfit', sans-serif; background: linear-gradient(135deg,#13111C,#1d1635 50%,#231b50); background-attachment: fixed; min-height: 100vh; color: #fff; padding-bottom: 60px; }
 .header { position: sticky; top: 0; z-index: 20; background: rgba(19,17,28,0.78); backdrop-filter: blur(20px); border-bottom: 1px solid rgba(255,255,255,0.08); padding: 14px 20px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .header .name { font-weight: 700; font-size: 16px; }
@@ -5685,7 +5688,10 @@ admin_html = '''<!DOCTYPE html>
 <style>
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; margin: 0; padding: 0; }
 * { box-sizing: border-box; }
-html, body { max-width: 100%; overflow-x: hidden; }
+/* overflow-x: clip (а не hidden) режет горизонтальную прокрутку, но не создаёт
+   scroll-контейнер — иначе ломается position: sticky у шапки (бургер уезжал
+   вверх при прокрутке на мобиле). */
+html, body { max-width: 100%; overflow-x: clip; }
 body {
   font-family: 'Outfit', sans-serif;
   background: linear-gradient(135deg, #13111C 0%, #1d1635 50%, #231b50 100%);
