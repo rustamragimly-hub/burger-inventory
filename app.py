@@ -3,7 +3,7 @@ Revisi — мульти-тенантная система инвентариза
 Фаза 1: Аутентификация и регистрация компаний.
 """
 from flask import (
-    Flask, request, render_template_string, redirect, url_for, flash, jsonify,
+    Flask, request, redirect, url_for, flash, jsonify,
     send_file, abort, session,
 )
 from flask_login import (
@@ -352,6 +352,26 @@ def _qty_fmt(v):
     return f'{n:g}'.replace('.', ',')
 
 
+# ============== КЭШ СКОМПИЛИРОВАННЫХ ШАБЛОНОВ ==============
+# flask.render_template_string компилирует строку-шаблон заново на КАЖДЫЙ
+# запрос. Для больших шаблонов это дорого (admin_html ~40 мс, revision_html
+# ~16 мс чистого CPU на запрос). Все наши шаблоны — модульные строки-константы,
+# поэтому компилируем каждую ровно один раз и дальше только рендерим.
+_TEMPLATE_CACHE = {}
+
+
+def render_cached(source, **context):
+    """Аналог render_template_string, но с кэшом скомпилированного шаблона.
+    Контекст-процессоры (pwa_head, icon, is_impersonating) и фильтры среды
+    применяются так же, как во flask.render_template_string."""
+    tmpl = _TEMPLATE_CACHE.get(source)
+    if tmpl is None:
+        tmpl = app.jinja_env.from_string(source)
+        _TEMPLATE_CACHE[source] = tmpl
+    app.update_template_context(context)
+    return tmpl.render(context)
+
+
 @app.before_request
 def make_session_permanent():
     session.permanent = True
@@ -575,7 +595,7 @@ def register():
                 db.session.rollback()
                 error = f'Ошибка регистрации: {e}'
 
-    return render_template_string(register_html, error=error, form=form)
+    return render_cached(register_html, error=error, form=form)
 
 
 def _send_verify_code_email(email, company, code):
@@ -634,7 +654,7 @@ def verify_code():
                 return redirect('/admin')
             return redirect('/login')
 
-    return render_template_string(
+    return render_cached(
         verify_code_html, error=error, email=org.owner_email,
         mail_on=_mail_enabled(), shown_code=shown_code,
     )
@@ -661,7 +681,7 @@ def verify_email(token):
     ссылкой). Основной путь — ввод кода на /verify."""
     org = Organization.query.filter_by(email_verify_token=token).first()
     if not org:
-        return render_template_string(
+        return render_cached(
             message_html,
             title='Ссылка недействительна',
             text='Токен подтверждения не найден или уже использован.',
@@ -723,7 +743,7 @@ def forgot_password():
                 sent = True
                 if not ok:
                     shown_link = reset_link  # SMTP выключен — показываем ссылку на экране
-    return render_template_string(forgot_html, sent=sent, error=error, shown_link=shown_link)
+    return render_cached(forgot_html, sent=sent, error=error, shown_link=shown_link)
 
 
 @app.route('/reset/<token>', methods=['GET', 'POST'])
@@ -732,7 +752,7 @@ def reset_password(token):
     valid = bool(user and user.reset_token_expires and user.reset_token_expires > datetime.utcnow())
     error = None
     if not valid:
-        return render_template_string(
+        return render_cached(
             message_html,
             title='Ссылка недействительна',
             text='Ссылка для сброса пароля устарела или уже использована. Запросите сброс заново.',
@@ -749,13 +769,13 @@ def reset_password(token):
             user.reset_token = None
             user.reset_token_expires = None
             db.session.commit()
-            return render_template_string(
+            return render_cached(
                 message_html,
                 title='Пароль изменён',
                 text='Новый пароль сохранён. Теперь войдите с ним.',
                 link_url='/login', link_text='Войти →',
             )
-    return render_template_string(reset_html, token=token, error=error)
+    return render_cached(reset_html, token=token, error=error)
 
 
 # ============== ЛОГИН / ЛОГАУТ ==============
@@ -778,7 +798,7 @@ def login():
                 f'Слишком много неудачных попыток. '
                 f'Попробуйте через {Config.LOGIN_LOCKOUT_MINUTES} минут.'
             )
-            return render_template_string(
+            return render_cached(
                 login_html, error=error, form=form,
                 now=datetime.now().strftime('%d.%m %H:%M'),
             )
@@ -806,7 +826,7 @@ def login():
                 return redirect('/admin')
             return redirect('/revision')
 
-    return render_template_string(
+    return render_cached(
         login_html, error=error, form=form,
         now=datetime.now().strftime('%d.%m %H:%M'),
     )
@@ -893,7 +913,7 @@ def billing():
         return redirect('/login')
     status = _subscription_status(org)
     is_admin = bool(current_user.user and current_user.user.role == 'admin')
-    return render_template_string(
+    return render_cached(
         billing_html, status=status, org=org, is_admin=is_admin,
         support_email='info@revisi.ru', yookassa_enabled=_yookassa_enabled(),
     )
@@ -1258,7 +1278,7 @@ def admin_panel():
     else:
         pending_group = None
 
-    return render_template_string(
+    return render_cached(
         admin_html,
         org=org,
         username=current_user.username,
@@ -2346,7 +2366,7 @@ def revision():
     counted_products = len(counted_ids)
     progress_pct = int((counted_products / total_products) * 100) if total_products else 0
 
-    return render_template_string(
+    return render_cached(
         revision_html,
         org=org,
         username=current_user.username,
@@ -3371,7 +3391,7 @@ def admin_discrepancy(rev_id):
         if nm not in loc_names:
             loc_names.append(nm)
 
-    return render_template_string(
+    return render_cached(
         discrepancy_html,
         org=org, username=current_user.username,
         rev_id=rev_id, has_data=has_data,
@@ -3632,7 +3652,7 @@ def support_page():
             'id': t.id, 'subject': t.subject, 'status': t.status,
             'when': t.updated_at.strftime('%d.%m.%Y %H:%M') if t.updated_at else '—',
         })
-    return render_template_string(support_list_html, org=org, items=items)
+    return render_cached(support_list_html, org=org, items=items)
 
 
 @app.route('/support/<int:ticket_id>', methods=['GET', 'POST'])
@@ -3663,7 +3683,7 @@ def support_view(ticket_id):
     replies = SupportTicketReply.query.filter_by(ticket_id=t.id).order_by(
         SupportTicketReply.created_at
     ).all()
-    return render_template_string(support_view_html, org=org, t=t, replies=replies)
+    return render_cached(support_view_html, org=org, t=t, replies=replies)
 
 
 # ============== SUPPORT API (для встроенного чат-виджета) ==============
@@ -3799,7 +3819,7 @@ def owner_login():
                 f'Слишком много неудачных попыток. '
                 f'Попробуйте через {Config.LOGIN_LOCKOUT_MINUTES} минут.'
             )
-            return render_template_string(owner_login_html, error=error)
+            return render_cached(owner_login_html, error=error)
 
         owner = OwnerUser.query.filter_by(email=email).first()
         if not owner or not owner.check_password(password):
@@ -3824,7 +3844,7 @@ def owner_login():
             session['owner_login_at'] = datetime.utcnow().timestamp()
             return redirect('/owner')
 
-    return render_template_string(owner_login_html, error=error)
+    return render_cached(owner_login_html, error=error)
 
 
 @app.route('/owner/logout')
@@ -3902,7 +3922,7 @@ def owner_security():
             remaining = len(json.loads(owner.recovery_codes_json))
         except Exception:
             remaining = 0
-    return render_template_string(
+    return render_cached(
         owner_security_html,
         owner_email=owner.email,
         totp_enabled=owner.totp_enabled,
@@ -3940,7 +3960,7 @@ def owner_2fa_setup():
             db.session.commit()
             session.pop('_2fa_setup_secret', None)
             log_owner_action('enable_2fa')
-            return render_template_string(
+            return render_cached(
                 owner_2fa_codes_html,
                 codes=recovery,
                 owner_pwa_head=_OWNER_PWA_HEAD,
@@ -3950,7 +3970,7 @@ def owner_2fa_setup():
         name=owner.email, issuer_name='Revisi Owner'
     )
     qr_svg = _make_qr_svg(uri)
-    return render_template_string(
+    return render_cached(
         owner_2fa_setup_html,
         qr_svg=qr_svg,
         secret=secret,
@@ -3995,7 +4015,7 @@ def owner_2fa_verify():
             log_attempt(ip, owner.email + ' [2fa]', False)
             error = 'Неверный код'
 
-    return render_template_string(
+    return render_cached(
         owner_2fa_verify_html,
         error=error,
         owner_pwa_head=_OWNER_PWA_HEAD,
@@ -4147,7 +4167,7 @@ def owner_dashboard():
     # Открытых тикетов
     open_tickets = SupportTicket.query.filter_by(status='open').count()
 
-    return render_template_string(
+    return render_cached(
         owner_dashboard_html,
         owner_email=current_user.username,
         total_orgs=total_orgs,
@@ -4202,7 +4222,7 @@ def owner_orgs():
             'is_blocked': org.is_blocked,
         })
 
-    return render_template_string(
+    return render_cached(
         owner_orgs_html,
         owner_email=current_user.username,
         org_rows=org_rows,
@@ -4396,7 +4416,7 @@ def owner_org_detail(org_id):
     features = org.features or {}
     has_template = bool(org.excel_template)
     template_size = len(org.excel_template) if org.excel_template else 0
-    return render_template_string(
+    return render_cached(
         owner_org_detail_html,
         owner_email=current_user.username,
         org=org, ends_str=ends_str,
@@ -4630,7 +4650,7 @@ def owner_audit():
             'details': (r.details or '')[:200],
             'ip': r.ip_address or '—',
         })
-    return render_template_string(
+    return render_cached(
         owner_audit_html,
         owner_email=current_user.username,
         log_rows=log_rows,
@@ -4682,7 +4702,7 @@ def owner_alerts():
         days = (org.subscription_ends_at - now).days
         paid_expiring.append({'id': org.id, 'name': org.name, 'email': org.owner_email, 'days': max(0, days)})
 
-    return render_template_string(
+    return render_cached(
         owner_alerts_html, owner_email=current_user.username,
         expiring_3=expiring_3, expiring_7=expiring_7,
         inactive=inactive, paid_expiring=paid_expiring,
@@ -4722,14 +4742,14 @@ def owner_broadcast():
         sent = len(recipients)
         flash(f'Сообщение поставлено в очередь для {sent} компаний. (Реальная отправка email подключается отдельно.)', 'success')
         return redirect('/owner/broadcast')
-    return render_template_string(owner_broadcast_html, owner_email=current_user.username)
+    return render_cached(owner_broadcast_html, owner_email=current_user.username)
 
 
 # ============== OWNER: BACKUP ==============
 @app.route('/owner/backup')
 @owner_required
 def owner_backup():
-    return render_template_string(owner_backup_html, owner_email=current_user.username)
+    return render_cached(owner_backup_html, owner_email=current_user.username)
 
 
 @app.route('/owner/backup/download')
@@ -4781,7 +4801,7 @@ def owner_tickets():
             'org_name': org_names.get(t.org_id, '—'),
             'when': t.updated_at.strftime('%d.%m.%Y %H:%M') if t.updated_at else '—',
         })
-    return render_template_string(owner_tickets_html, owner_email=current_user.username, items=items)
+    return render_cached(owner_tickets_html, owner_email=current_user.username, items=items)
 
 
 @app.route('/owner/tickets/<int:ticket_id>', methods=['GET', 'POST'])
@@ -4813,7 +4833,7 @@ def owner_ticket_view(ticket_id):
 
     org = db.session.get(Organization, t.org_id)
     replies = SupportTicketReply.query.filter_by(ticket_id=t.id).order_by(SupportTicketReply.created_at).all()
-    return render_template_string(
+    return render_cached(
         owner_ticket_view_html, owner_email=current_user.username,
         t=t, org=org, replies=replies,
     )
@@ -4837,7 +4857,7 @@ def owner_catalog():
         return redirect('/owner/catalog')
 
     rows = CatalogProduct.query.order_by(CatalogProduct.category_name, CatalogProduct.name).all()
-    return render_template_string(owner_catalog_html, owner_email=current_user.username, rows=rows)
+    return render_cached(owner_catalog_html, owner_email=current_user.username, rows=rows)
 
 
 @app.route('/owner/catalog/<int:cp_id>/delete', methods=['POST'])
@@ -4877,7 +4897,7 @@ def owner_health():
     health['products'] = Product.query.count()
     health['revisions'] = Revision.query.count()
     health['items'] = RevisionItem.query.count()
-    return render_template_string(owner_health_html, owner_email=current_user.username, h=health)
+    return render_cached(owner_health_html, owner_email=current_user.username, h=health)
 
 
 # ============== OWNER: SQL КОНСОЛЬ ==============
@@ -4908,7 +4928,7 @@ def owner_sql():
                         result_rows = [[f'OK (rowcount={res.rowcount})']]
             except Exception as e:
                 error = str(e)
-    return render_template_string(
+    return render_cached(
         owner_sql_html, owner_email=current_user.username,
         query=query, result_cols=result_cols, result_rows=result_rows,
         error=error, executed=executed,
