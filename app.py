@@ -2305,6 +2305,10 @@ def revision():
     # Показываем и in_progress, и pending (пока ждём решения администратора)
     current_rev = None
     qty_map = {}  # product_id -> сумма quantity в активной ревизии на этой локации
+    # counted_ids — товары, по которым оператор внёс показания (в т.ч. явный 0).
+    # Именно наличие записи (а не сумма > 0) считается «пересчитано»: товар с
+    # фактическим остатком 0 тоже нужно отметить вручную.
+    counted_ids = set()
     if selected_loc:
         current_rev = Revision.query.filter(
             Revision.org_id == org.id,
@@ -2316,6 +2320,7 @@ def revision():
                 revision_id=current_rev.id, location_id=selected_loc.id
             ).all()
             for it in items:
+                counted_ids.add(it.product_id)
                 qty_map[it.product_id] = qty_map.get(it.product_id, 0) + (it.quantity or 0)
             qty_map = {k: round(v, 3) for k, v in qty_map.items()}
 
@@ -2335,7 +2340,10 @@ def revision():
     is_admin = (current_user.user and current_user.user.role == 'admin')
 
     total_products = sum(len(items) for _, items in grouped_ordered)
-    counted_products = sum(1 for pid, q in qty_map.items() if q and q > 0)
+    # Пересчитано = по товару есть запись показаний (включая явный 0), а не сумма > 0.
+    product_ids = {p.id for p in products}
+    counted_ids &= product_ids  # только товары из текущего ассортимента локации
+    counted_products = len(counted_ids)
     progress_pct = int((counted_products / total_products) * 100) if total_products else 0
 
     return render_template_string(
@@ -2346,6 +2354,7 @@ def revision():
         selected=selected_loc,
         grouped=grouped_ordered,
         qty_map=qty_map,
+        counted_ids=counted_ids,
         norms_map=norms_map,
         is_admin=is_admin,
         rev_status=(current_rev.status if current_rev else None),
@@ -2405,6 +2414,60 @@ def revision_add():
         return jsonify({'ok': False, 'error': str(e)}), 400
 
 
+@app.route('/revision/mark_zero', methods=['POST'])
+@login_required_user
+def revision_mark_zero():
+    """Отметить товар как пересчитанный с нулевым остатком («нет в наличии»).
+    Нужно, чтобы оператор мог осознанно внести 0 по отсутствующему товару —
+    иначе завершить ревизию не даст проверка полноты. Идемпотентно: если по
+    товару уже есть показания, ничего не меняем."""
+    org = _current_org()
+    if not org:
+        return jsonify({'ok': False, 'error': 'no org'}), 400
+    try:
+        location_id = int(request.form.get('location_id') or 0)
+        product_id = int(request.form.get('product_id') or 0)
+    except (TypeError, ValueError):
+        return jsonify({'ok': False, 'error': 'bad params'}), 400
+
+    loc = Location.query.filter_by(id=location_id, org_id=org.id).first()
+    prod = Product.query.filter_by(id=product_id, org_id=org.id).first()
+    if not loc or not prod:
+        return jsonify({'ok': False, 'error': 'not found'}), 404
+
+    # Нельзя менять позиции, пока ревизия ожидает подтверждения администратором
+    pending_rev = Revision.query.filter_by(
+        org_id=org.id, location_id=loc.id, status='pending'
+    ).first()
+    if pending_rev:
+        return jsonify({'ok': False, 'error': 'Ревизия ожидает подтверждения администратором'}), 400
+
+    try:
+        rev = _get_or_create_active_revision(org.id, loc.id, current_user.raw_id)
+        existing = RevisionItem.query.filter_by(
+            revision_id=rev.id, product_id=prod.id, location_id=loc.id
+        ).first()
+        if existing:
+            # Уже есть показания по товару — считаем пересчитанным, не трогаем.
+            total = db.session.query(db.func.coalesce(db.func.sum(RevisionItem.quantity), 0)).filter_by(
+                revision_id=rev.id, product_id=prod.id, location_id=loc.id
+            ).scalar() or 0
+            return jsonify({'ok': True, 'total': float(total), 'revision_id': rev.id})
+        item = RevisionItem(
+            revision_id=rev.id,
+            product_id=prod.id,
+            location_id=loc.id,
+            quantity=0,
+            added_by_user_id=current_user.raw_id,
+        )
+        db.session.add(item)
+        db.session.commit()
+        return jsonify({'ok': True, 'total': 0.0, 'revision_id': rev.id})
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'ok': False, 'error': str(e)}), 400
+
+
 @app.route('/revision/finish', methods=['POST'])
 @login_required_user
 def revision_finish():
@@ -2434,6 +2497,69 @@ def revision_finish():
     to_finish = [r for r in open_revs if _counts.get(r.id, 0) > 0]
     if not to_finish:
         return jsonify({'ok': False, 'error': 'Ревизия пуста — посчитайте хотя бы одну позицию'}), 400
+
+    # ── Проверка полноты ─────────────────────────────────────────────────────
+    # Нельзя отправить на завершение, пока по КАЖДОМУ товару ассортимента каждой
+    # завершаемой локации не внесены показания (в т.ч. явный 0). Это отменяет
+    # прежнюю автопростановку «0» непосчитанным позициям в отчёте: оператор
+    # обязан пройти по всем товарам сам.
+    finish_ids = [r.id for r in to_finish]
+    loc_ids = [r.location_id for r in to_finish if r.location_id]
+
+    # Ассортимент (только активные товары) по каждой локации
+    assortment_by_loc = {}
+    if loc_ids:
+        for lid, pid in (
+            db.session.query(LocationProduct.location_id, LocationProduct.product_id)
+            .join(Product, Product.id == LocationProduct.product_id)
+            .filter(LocationProduct.location_id.in_(loc_ids), Product.is_active.is_(True))
+            .all()
+        ):
+            assortment_by_loc.setdefault(lid, set()).add(pid)
+
+    # Пересчитанные товары (есть хотя бы одна запись) по каждой ревизии
+    counted_by_rev = {}
+    for rid, pid in (
+        db.session.query(RevisionItem.revision_id, RevisionItem.product_id)
+        .filter(RevisionItem.revision_id.in_(finish_ids))
+        .distinct()
+        .all()
+    ):
+        counted_by_rev.setdefault(rid, set()).add(pid)
+
+    missing_by_rev = {}
+    all_missing_ids = set()
+    for rev in to_finish:
+        missing = assortment_by_loc.get(rev.location_id, set()) - counted_by_rev.get(rev.id, set())
+        if missing:
+            missing_by_rev[rev.id] = missing
+            all_missing_ids |= missing
+
+    if missing_by_rev:
+        names = {
+            p.id: p.name
+            for p in Product.query.filter(Product.id.in_(all_missing_ids)).all()
+        }
+        locs = {l.id: l for l in Location.query.filter(Location.id.in_(loc_ids)).all()}
+        missing_payload = []
+        missing_total = 0
+        for rev in to_finish:
+            miss = missing_by_rev.get(rev.id)
+            if not miss:
+                continue
+            missing_total += len(miss)
+            loc = locs.get(rev.location_id)
+            missing_payload.append({
+                'location': loc.name if loc else '—',
+                'count': len(miss),
+                'products': sorted(names.get(pid, f'#{pid}') for pid in miss),
+            })
+        return jsonify({
+            'ok': False,
+            'error': 'Не все позиции пересчитаны',
+            'missing': missing_payload,
+            'missing_total': missing_total,
+        }), 400
 
     try:
         now = datetime.utcnow()
@@ -7336,6 +7462,16 @@ header p{font-size:12px;color:rgba(255,255,255,0.4);margin-top:2px;}
 .badge-green{background:rgba(16,185,129,0.25);color:#6ee7b7;}
 .badge-yellow{background:rgba(251,191,36,0.25);color:#fcd34d;}
 .badge-red{background:rgba(239,68,68,0.25);color:#fca5a5;}
+.product-item.counted{border-color:rgba(16,185,129,0.35);background:rgba(16,185,129,0.06);}
+.pi-right{display:flex;align-items:center;gap:8px;}
+.pi-check{width:22px;height:22px;border-radius:50%;background:rgba(16,185,129,0.22);color:#6ee7b7;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;flex:0 0 auto;}
+.pi-todo{font-size:11px;font-weight:700;color:#fcd34d;background:rgba(251,191,36,0.14);border:1px solid rgba(251,191,36,0.22);padding:4px 9px;border-radius:8px;white-space:nowrap;}
+.cbtn-zero{width:100%;margin-top:10px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.14);color:rgba(255,255,255,0.8);font-size:15px;font-weight:600;padding:14px;border-radius:14px;cursor:pointer;font-family:'Outfit',sans-serif;}
+.cbtn-zero:active{background:rgba(255,255,255,0.12);}
+.miss-box{max-width:440px;}
+.miss-list{max-height:46vh;overflow-y:auto;margin:2px 0 18px;text-align:left;}
+.miss-loc{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;color:#c4b5fd;margin:12px 0 6px;}
+.miss-prod{font-size:14px;color:rgba(255,255,255,0.8);padding:6px 10px;background:rgba(251,191,36,0.1);border:1px solid rgba(251,191,36,0.2);border-radius:8px;margin-bottom:5px;}
 .empty-msg{text-align:center;color:rgba(255,255,255,0.5);padding:48px 20px;font-size:14px;border:1px dashed rgba(255,255,255,0.12);border-radius:18px;margin:24px auto;max-width:420px;}
 .empty-msg .ico{font-size:52px;display:block;margin-bottom:14px;opacity:0.7;}
 .empty-msg .ttl{color:rgba(255,255,255,0.85);font-size:17px;font-weight:600;margin-bottom:6px;}
@@ -7465,15 +7601,22 @@ header p{font-size:12px;color:rgba(255,255,255,0.4);margin-top:2px;}
           {% set badge_cls = 'badge-neutral' %}
           {% set badge_text = qty|qty if qty > 0 else '' %}
         {% endif %}
-        <div class="product-item" data-name="{{ p.name|lower }}"
+        <div class="product-item{% if p.id in counted_ids %} counted{% endif %}" data-name="{{ p.name|lower }}"
           onclick="openCalc({{ p.id }}, {{ selected.id }}, '{{ p.name|replace("'","\\'")|e }}', '{{ p.unit }}')">
           <div>
             <div class="p-name">{{ p.name }}</div>
             <div class="p-meta">{{ p.unit }}{% if norm and norm > 0 %} · норма {{ norm|int }}{% endif %}</div>
           </div>
-          {% if qty > 0 or (norm and norm > 0) %}
-          <div class="badge {{ badge_cls }}">{{ badge_text if badge_text else '0' }}</div>
-          {% endif %}
+          <div class="pi-right">
+            {% if qty > 0 or (norm and norm > 0) %}
+            <div class="badge {{ badge_cls }}">{{ badge_text if badge_text else '0' }}</div>
+            {% endif %}
+            {% if p.id in counted_ids %}
+            <span class="pi-check" title="Показания внесены">✓</span>
+            {% else %}
+            <span class="pi-todo">не внесено</span>
+            {% endif %}
+          </div>
         </div>
       {% endfor %}
     </div>
@@ -7519,6 +7662,7 @@ header p{font-size:12px;color:rgba(255,255,255,0.4);margin-top:2px;}
     <button class="cbtn cbtn-add" onclick="addToTotal()">+ ДОБАВИТЬ</button>
     <button class="cbtn cbtn-save" onclick="closeCalcDone()">✓ ГОТОВО</button>
   </div>
+  <button class="cbtn-zero" onclick="markZero()">Нет в наличии — записать 0</button>
   <div class="total-row">Итого: <span id="total" class="total-num">0</span> <span id="unitLabel"></span></div>
   <div class="hist-log">
     <div class="hist-label">История (текущая сессия):</div>
@@ -7532,7 +7676,7 @@ header p{font-size:12px;color:rgba(255,255,255,0.4);margin-top:2px;}
 <div class="modal-box">
   <div class="icon">{{ icon('clipboard', 40)|safe }}</div>
   <h2>Завершить ревизию?</h2>
-  <p>На проверку уйдут все посчитанные локации одним запросом. После этого добавить позиции будет нельзя, пока админ не подтвердит.</p>
+  <p>Отправить можно, только когда по всем товарам внесены показания. На проверку уйдут все посчитанные локации одним запросом. После этого добавить позиции будет нельзя, пока админ не подтвердит.</p>
   <div class="modal-btns">
     <button class="mbtn mbtn-no" onclick="cancelFinish()">Нет</button>
     <button class="mbtn mbtn-yes" onclick="confirmFinish()">Да</button>
@@ -7740,6 +7884,50 @@ async function closeCalcDone() {
   location.reload();
 }
 
+async function markZero() {
+  // Осознанно записать по товару 0 («нет в наличии») — товар считается
+  // пересчитанным, и ревизию можно будет завершить.
+  const fd = new FormData();
+  fd.append('product_id', curProdId);
+  fd.append('location_id', curLocId);
+  try {
+    const res = await fetch('/revision/mark_zero', {method:'POST', body:fd});
+    const data = await res.json();
+    if (data.ok) {
+      showToast('Записано: 0', 'success');
+      closeCalc();
+      location.reload();
+    } else {
+      showToast('Ошибка: ' + (data.error || ''), 'error');
+    }
+  } catch(e) {
+    showToast('Ошибка сети', 'error');
+  }
+}
+
+function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+function showMissingModal(missing, total) {
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-center active';
+  let body = '';
+  missing.forEach(loc => {
+    body += `<div class="miss-loc">${escapeHtml(loc.location)} — не внесено ${loc.count}</div>`;
+    loc.products.forEach(name => { body += `<div class="miss-prod">${escapeHtml(name)}</div>`; });
+  });
+  overlay.innerHTML = `
+    <div class="modal-box miss-box">
+      <div class="icon" style="color:#fcd34d;"><svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></div>
+      <h2>Не все позиции пересчитаны</h2>
+      <p>Внесите показания по каждому продукту${total ? ' (осталось ' + total + ')' : ''}. Для отсутствующих товаров нажмите «Нет в наличии — записать 0».</p>
+      <div class="miss-list">${body}</div>
+      <button class="mbtn mbtn-ok">Понятно</button>
+    </div>`;
+  overlay.querySelector('.mbtn-ok').onclick = () => document.body.removeChild(overlay);
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) document.body.removeChild(overlay); });
+  document.body.appendChild(overlay);
+}
+
 function requestFinish() { document.getElementById('confirmModal').classList.add('active'); }
 function cancelFinish() { document.getElementById('confirmModal').classList.remove('active'); }
 async function confirmFinish() {
@@ -7751,6 +7939,8 @@ async function confirmFinish() {
     const data = await res.json();
     if (data.ok) {
       document.getElementById('sentModal').classList.add('active');
+    } else if (data.missing && data.missing.length) {
+      showMissingModal(data.missing, data.missing_total);
     } else {
       alert(data.error || 'Не удалось завершить ревизию');
     }
