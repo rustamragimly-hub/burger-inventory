@@ -28,13 +28,16 @@ def app():
 
 @pytest.fixture()
 def session(app):
-    """Чистая БД на каждый тест: откатываем все данные после теста."""
+    """Чистая БД и чистая сессия на каждый тест.
+
+    Пересоздаём схему и сбрасываем scoped-сессию: постоянная сессия внешнего
+    app-контекста иначе копит объекты в identity map, а SQLite переиспользует
+    id после DELETE — «протухший» объект прошлого теста сталкивается с новым и
+    ломает flush. remove() + drop/create дают полностью чистый старт."""
     yield db.session
-    db.session.rollback()
-    # Чистим таблицы между тестами, чтобы они не влияли друг на друга.
-    for table in reversed(db.metadata.sorted_tables):
-        db.session.execute(table.delete())
-    db.session.commit()
+    db.session.remove()
+    db.drop_all()
+    db.create_all()
 
 
 @pytest.fixture()

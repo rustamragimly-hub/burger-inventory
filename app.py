@@ -108,6 +108,19 @@ LEGAL_PAGES = {
     '/consent': 'consent.html',
 }
 
+# Версия юр-документов (оферта/согласие/политика). Меняй при КАЖДОЙ правке их
+# текста — значение записывается в доказательство согласия, чтобы было видно,
+# какую редакцию документов принял пользователь при регистрации.
+LEGAL_DOCS_VERSION = '2026-08-09'
+
+
+def _client_ip():
+    """IP клиента с учётом прокси (Timeweb/Render). X-Forwarded-For может быть
+    списком 'client, proxy1, ...' — берём первый (реальный клиент)."""
+    fwd = request.headers.get('X-Forwarded-For', '') if request else ''
+    ip = (fwd.split(',')[0].strip() if fwd else (request.remote_addr if request else '')) or ''
+    return ip[:45]
+
 
 @app.after_request
 def add_owner_security_headers(response):
@@ -569,6 +582,11 @@ def register():
                     plan='trial',
                     trial_ends_at=datetime.utcnow() + timedelta(days=Config.TRIAL_DAYS),
                     pos_system=pos_system,
+                    # Доказательство согласия на обработку ПДн (152-ФЗ)
+                    consent_at=datetime.utcnow(),
+                    consent_ip=_client_ip(),
+                    consent_user_agent=(request.headers.get('User-Agent') or '')[:300],
+                    consent_version=LEGAL_DOCS_VERSION,
                 )
                 db.session.add(org)
                 db.session.flush()
@@ -9909,6 +9927,19 @@ with app.app_context():
             ))
             conn.execute(db.text(
                 "ALTER TABLE organizations ADD COLUMN IF NOT EXISTS renewal_reminder_last_sent DATE"
+            ))
+            # Доказательство согласия на обработку ПДн (152-ФЗ)
+            conn.execute(db.text(
+                "ALTER TABLE organizations ADD COLUMN IF NOT EXISTS consent_at TIMESTAMP"
+            ))
+            conn.execute(db.text(
+                "ALTER TABLE organizations ADD COLUMN IF NOT EXISTS consent_ip VARCHAR(45)"
+            ))
+            conn.execute(db.text(
+                "ALTER TABLE organizations ADD COLUMN IF NOT EXISTS consent_user_agent VARCHAR(300)"
+            ))
+            conn.execute(db.text(
+                "ALTER TABLE organizations ADD COLUMN IF NOT EXISTS consent_version VARCHAR(30)"
             ))
             # 2FA для owner_users
             conn.execute(db.text(

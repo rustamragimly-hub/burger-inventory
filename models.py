@@ -52,6 +52,14 @@ class Organization(db.Model):
     # Определяет, как импортируются товары и в каком формате отдаётся отчёт.
     pos_system = db.Column(db.String(20), nullable=True)
 
+    # Доказательство согласия на обработку ПДн (152-ФЗ): фиксируем момент,
+    # IP, браузер и версию юр-документов, принятых при регистрации. Нужно,
+    # чтобы при проверке/споре подтвердить факт и условия согласия.
+    consent_at = db.Column(db.DateTime, nullable=True)
+    consent_ip = db.Column(db.String(45), nullable=True)
+    consent_user_agent = db.Column(db.String(300), nullable=True)
+    consent_version = db.Column(db.String(30), nullable=True)
+
     # Связи — все данные компании
     users = db.relationship('User', backref='organization', lazy=True, cascade='all, delete-orphan')
     locations = db.relationship('Location', backref='organization', lazy=True, cascade='all, delete-orphan')
