@@ -2127,6 +2127,150 @@ def _import_rows(org_id, rows):
     return added, skipped, errors
 
 
+def _replace_products_from_blank(org_id, rows):
+    """Заменить список товаров компании по новому бланку (rows из _parse_iiko_bank).
+
+    Сопоставление по коду (основное) и по (категория, имя) (фолбэк):
+      • товар из бланка есть в базе → обновляем имя/ед./категорию, делаем активным;
+      • товара нет → создаём;
+      • существующий товар, которого НЕТ в новом бланке:
+          - есть история ревизий → архивируем (is_active=False, убираем из
+            ассортимента). Отчёты прошлых ревизий не разрушаются;
+          - истории нет → физически удаляем.
+    Активные товары без ассортимента добавляются во все локации (чтобы их можно
+    было считать). Существующие пофункциональные настройки ассортимента не трогаем.
+
+    НЕ коммитит — вызывающий код коммитит одной транзакцией (всё или ничего).
+    Возвращает статистику {created, updated, retired, deleted}.
+    """
+    from models import RevisionItem, ExpectedStock
+    stats = {'created': 0, 'updated': 0, 'retired': 0, 'deleted': 0}
+
+    cat_cache = {c.name: c for c in Category.query.filter_by(org_id=org_id).all()}
+    products = Product.query.filter_by(org_id=org_id).all()
+    by_code, by_name = {}, {}
+    for p in products:
+        if p.code:
+            by_code.setdefault(str(p.code).strip(), p)
+        by_name.setdefault((p.category_id, (p.name or '').strip().lower()), p)
+
+    def _get_cat(cat_name):
+        if not cat_name:
+            return None
+        c = cat_cache.get(cat_name)
+        if not c:
+            max_order = db.session.query(db.func.max(Category.sort_order)).filter_by(org_id=org_id).scalar() or 0
+            c = Category(org_id=org_id, name=cat_name, sort_order=max_order + 1)
+            db.session.add(c)
+            db.session.flush()
+            cat_cache[cat_name] = c
+        return c
+
+    kept_ids = set()
+    for row in rows:
+        name = _sanitize_product_name((row.get('Название') or '').strip())
+        if not name:
+            continue
+        code = (row.get('Код') or '').strip()
+        unit = (row.get('Ед. изм.') or 'шт').strip() or 'шт'
+        cat = _get_cat((row.get('Категория') or '').strip())
+        cat_id = cat.id if cat else None
+
+        p = None
+        if code and code in by_code:
+            p = by_code[code]
+        elif (cat_id, name.lower()) in by_name:
+            p = by_name[(cat_id, name.lower())]
+
+        if p:
+            p.name = name
+            p.unit = unit
+            p.category_id = cat_id
+            p.is_active = True
+            if code:
+                p.code = code
+            stats['updated'] += 1
+        else:
+            if not code:
+                code = _generate_product_code(org_id)
+            p = Product(org_id=org_id, name=name, code=code, unit=unit,
+                        category_id=cat_id, is_active=True)
+            db.session.add(p)
+            db.session.flush()
+            by_code[str(code).strip()] = p
+            by_name[(cat_id, name.lower())] = p
+            stats['created'] += 1
+        kept_ids.add(p.id)
+
+    # Товары, которых нет в новом бланке — архивируем (с историей) или удаляем.
+    for p in products:
+        if p.id in kept_ids:
+            continue
+        LocationProduct.query.filter_by(product_id=p.id).delete(synchronize_session=False)
+        has_history = db.session.query(RevisionItem.id).filter_by(product_id=p.id).first() is not None
+        if has_history:
+            p.is_active = False
+            stats['retired'] += 1
+        else:
+            ProductNorm.query.filter_by(product_id=p.id).delete(synchronize_session=False)
+            ExpectedStock.query.filter_by(product_id=p.id).update(
+                {'product_id': None}, synchronize_session=False)
+            db.session.delete(p)
+            stats['deleted'] += 1
+
+    db.session.flush()
+
+    # Активные товары без ассортимента вообще — добавляем во все локации.
+    loc_ids = [l.id for l in Location.query.filter_by(org_id=org_id).all()]
+    if loc_ids:
+        lp_have = set()
+        for lp in LocationProduct.query.filter(LocationProduct.location_id.in_(loc_ids)).all():
+            lp_have.add(lp.product_id)
+        for pid in kept_ids:
+            if pid not in lp_have:
+                for lid in loc_ids:
+                    db.session.add(LocationProduct(location_id=lid, product_id=pid))
+
+    return stats
+
+
+@app.route('/admin/iiko/replace', methods=['POST'])
+@admin_required
+def admin_iiko_replace():
+    """Полная замена списка товаров по новому бланку iiko: старые, которых нет
+    в новом файле, удаляются (или архивируются, если есть история), новые
+    добавляются. Бланк также становится новым шаблоном отчёта."""
+    org = _current_org()
+    f = request.files.get('file')
+    if not f or not f.filename:
+        flash('Файл не выбран.', 'error')
+        return redirect('/admin#tab-import')
+    fn = f.filename.lower()
+    if not (fn.endswith('.xls') or fn.endswith('.xlsx')):
+        flash('Нужен файл бланка инвентаризации из iiko (.xls или .xlsx).', 'error')
+        return redirect('/admin#tab-import')
+    try:
+        rows, xlsx_bytes = _parse_iiko_bank(f.read())
+        if not rows:
+            flash('Не удалось распознать товары. Проверьте, что это «Бланк инвентаризации» из iiko.', 'error')
+            return redirect('/admin#tab-import')
+        stats = _replace_products_from_blank(org.id, rows)
+        org.excel_template = xlsx_bytes
+        if not org.pos_system:
+            org.pos_system = 'iiko'
+        db.session.commit()
+        flash(
+            f'Список продуктов обновлён по новому бланку: добавлено {stats["created"]}, '
+            f'обновлено {stats["updated"]}, архивировано {stats["retired"]} (с историей), '
+            f'удалено {stats["deleted"]}. Отчёт выгружается по новому бланку.',
+            'success',
+        )
+    except Exception as e:
+        db.session.rollback()
+        flash(f'Не удалось обработать файл: {e}', 'error')
+    return redirect('/admin#tab-import')
+
+
 @app.route('/admin/import/upload', methods=['POST'])
 @admin_required
 def admin_import_upload():
@@ -6750,6 +6894,18 @@ hr.soft { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 14px 
             </div>
             <button class="btn btn-primary" type="submit" style="margin-top:10px;display:inline-flex;align-items:center;gap:6px;">{{ icon('upload', 15)|safe }} Загрузить бланк iiko</button>
           </form>
+
+          <div style="margin-top:16px;padding-top:14px;border-top:1px solid rgba(255,255,255,0.08);">
+            <div style="font-weight:600;display:flex;align-items:center;gap:6px;margin-bottom:4px;">{{ icon('rotate', 15)|safe }} Обновить список продуктов</div>
+            <p class="meta" style="margin:0 0 10px;">Загрузите <b>новый бланк</b> — товары, которых в нём нет, будут убраны из списка (а если по ним есть история ревизий — архивированы), новые добавятся. Отчёт тоже перейдёт на новый бланк.</p>
+            <form method="post" action="/admin/iiko/replace" enctype="multipart/form-data"
+                  onsubmit="return confirmReplaceBlank(this);">
+              <div class="drop-zone">
+                <input type="file" name="file" accept=".xls,.xlsx" required style="color:white;">
+              </div>
+              <button class="btn btn-danger" type="submit" style="margin-top:10px;display:inline-flex;align-items:center;gap:6px;">{{ icon('rotate', 15)|safe }} Заменить список по новому бланку</button>
+            </form>
+          </div>
         </div>
 
         <div class="syscol">
@@ -7500,6 +7656,17 @@ async function submitEditProduct(ev) {
     btn.disabled = false;
     btn.textContent = origText;
   }
+}
+
+function confirmReplaceBlank(form) {
+  if (!confirm('Заменить весь список продуктов по загруженному бланку?\n\n' +
+      'Товары, которых нет в новом файле, будут удалены. Если по товару есть история ревизий — он архивируется (история сохранится). Новые товары добавятся, отчёт перейдёт на новый бланк.\n\nПродолжить?')) {
+    return false;
+  }
+  var b = form.querySelector('button');
+  b.textContent = 'Обработка…';
+  b.disabled = true;
+  return true;
 }
 
 async function uploadImport(ev) {
