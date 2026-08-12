@@ -2932,6 +2932,18 @@ def _build_revision_xlsx(revs):
 
         today_str = _fmt_dt(primary.finished_at or datetime.utcnow(), org, fmt='%d.%m.%Y')
 
+        # Коды и имена, представленные в шаблоне (по оригиналу, до заполнения).
+        # По ним определим посчитанные товары, которых в шаблоне нет вовсе —
+        # их подсчёт иначе молча пропал бы. Такие вынесем на отдельный лист.
+        tpl_codes, tpl_names = set(), set()
+        for _row in range(1, ws.max_row + 1):
+            _cv = ws.cell(row=_row, column=2).value
+            if _cv is not None and str(_cv).strip():
+                tpl_codes.add(str(_cv).strip())
+            _nv = ws.cell(row=_row, column=3).value
+            if _nv is not None and str(_nv).strip():
+                tpl_names.add(str(_nv).strip().lower())
+
         for row in range(1, ws.max_row + 1):
             for col in range(1, 10):
                 cell = ws.cell(row=row, column=col)
@@ -3057,6 +3069,32 @@ def _build_revision_xlsx(revs):
                 if rng.min_row == row and rng.max_row == row:
                     ws.unmerge_cells(str(rng))
             ws.delete_rows(row, 1)
+
+        # Страховка от потери подсчёта: посчитанные товары (с ненулевым
+        # остатком), которых в загруженном шаблоне нет ни по коду, ни по имени,
+        # выносим на отдельный лист — иначе их количество молча пропало бы.
+        missing = []
+        for pid, qty in qty_by_pid.items():
+            if not qty:  # 0 не теряется — пропускаем
+                continue
+            p = products.get(pid)
+            if not p:
+                continue
+            code_ok = bool(p.code) and str(p.code).strip() in tpl_codes
+            name_ok = bool(p.name) and p.name.strip().lower() in tpl_names
+            if not code_ok and not name_ok:
+                missing.append(p)
+        if missing:
+            ws2 = wb.create_sheet('Не найдено в шаблоне')
+            hdr = ['Код', 'Наименование', 'Ед. изм.', 'Остаток фактический']
+            ws2.append(hdr)
+            for cell in ws2[1]:
+                cell.font = Font(bold=True)
+            for p in sorted(missing, key=lambda x: (x.name or '').lower()):
+                ws2.append([p.code or '', p.name, p.unit, round(qty_by_pid.get(p.id, 0), 3)])
+            for col, w in zip('ABCD', (12, 50, 10, 18)):
+                ws2.column_dimensions[col].width = w
+            ws2.freeze_panes = 'A2'
 
         buf = BytesIO()
         wb.save(buf)

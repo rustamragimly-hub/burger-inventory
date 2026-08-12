@@ -104,3 +104,60 @@ def test_orphan_row_name_restored_when_in_catalog(session, org_factory):
     by_name, codes = _read_filled(buf)
     assert '9999' in codes            # не удалена — код есть в каталоге
     assert by_name.get('Вода') == 7   # имя восстановлено из каталога + количество
+
+
+def test_counted_product_absent_from_template_goes_to_second_sheet(session, org_factory):
+    """Посчитанный товар с ненулевым остатком, которого нет в шаблоне ни по
+    коду, ни по имени, должен попасть на отдельный лист «Не найдено в шаблоне»,
+    а не потеряться молча."""
+    org, locs, prods = org_factory(
+        products=[('1001', 'Кола', 'шт'), ('2001', 'Пиво', 'л')],
+        locations=('Склад',),
+    )
+    loc = locs[0]
+    for p in prods:
+        db.session.add(models.LocationProduct(location_id=loc.id, product_id=p.id))
+    org.excel_template = _make_iiko_template()  # шаблон знает только 1001/1002/9999
+    db.session.commit()
+    kola, pivo = prods
+    rev = models.Revision(org_id=org.id, location_id=loc.id, status='completed',
+                          finished_at=datetime(2026, 8, 11, 10, 0))
+    db.session.add(rev); db.session.flush()
+    db.session.add(models.RevisionItem(revision_id=rev.id, product_id=kola.id, location_id=loc.id, quantity=5))
+    db.session.add(models.RevisionItem(revision_id=rev.id, product_id=pivo.id, location_id=loc.id, quantity=3))
+    db.session.commit()
+
+    buf = app._build_revision_xlsx([rev])
+    wb = load_workbook(io.BytesIO(buf.getvalue()))
+    assert 'Не найдено в шаблоне' in wb.sheetnames
+    ws2 = wb['Не найдено в шаблоне']
+    rows = [(r[1].value, r[3].value) for r in ws2.iter_rows(min_row=2)]
+    names = {n for n, q in rows}
+    assert 'Пиво' in names            # посчитан, нет в шаблоне → на втором листе
+    assert dict(rows)['Пиво'] == 3
+    assert 'Кола' not in names        # есть в шаблоне → на основном листе
+
+
+def test_missing_zero_count_does_not_create_second_sheet(session, org_factory):
+    """Товар с нулём, отсутствующий в шаблоне, не теряет данных (0 не жалко) —
+    отдельный лист ради него не создаём, чтобы не засорять отчёт."""
+    org, locs, prods = org_factory(
+        products=[('1001', 'Кола', 'шт'), ('2001', 'Пиво', 'л')],
+        locations=('Склад',),
+    )
+    loc = locs[0]
+    for p in prods:
+        db.session.add(models.LocationProduct(location_id=loc.id, product_id=p.id))
+    org.excel_template = _make_iiko_template()
+    db.session.commit()
+    kola, pivo = prods
+    rev = models.Revision(org_id=org.id, location_id=loc.id, status='completed',
+                          finished_at=datetime(2026, 8, 11, 10, 0))
+    db.session.add(rev); db.session.flush()
+    db.session.add(models.RevisionItem(revision_id=rev.id, product_id=kola.id, location_id=loc.id, quantity=5))
+    db.session.add(models.RevisionItem(revision_id=rev.id, product_id=pivo.id, location_id=loc.id, quantity=0))
+    db.session.commit()
+
+    buf = app._build_revision_xlsx([rev])
+    wb = load_workbook(io.BytesIO(buf.getvalue()))
+    assert 'Не найдено в шаблоне' not in wb.sheetnames
