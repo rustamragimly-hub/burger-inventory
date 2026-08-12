@@ -2881,6 +2881,9 @@ def _build_revision_xlsx(revs):
     qty_by_pid = {}
     for it in items:
         qty_by_pid[it.product_id] = qty_by_pid.get(it.product_id, 0) + (it.quantity or 0)
+    # Округляем сумму до 3 знаков сразу у источника: сложение float иначе даёт
+    # «грязь» вида 0.7250000000000001, которая уходила в отчёт как есть.
+    qty_by_pid = {k: round(v, 3) for k, v in qty_by_pid.items()}
 
     # Список товаров отчёта — ОБЩИЙ по компании: объединение ассортиментов ВСЕХ
     # локаций (не только тех, что попали в эту ревизию) плюс всё фактически
@@ -2913,10 +2916,13 @@ def _build_revision_xlsx(revs):
         # суммируем количества, а не теряем второе.
         agg_by_code = {}
         agg_by_name = {}
+        prod_by_code = {}  # нормализованный код -> Product (для восстановления имени)
         for pid, p in products.items():
             qty = qty_by_pid.get(pid, 0)
             if p.code:
-                agg_by_code[p.code] = agg_by_code.get(p.code, 0) + qty
+                code_key = str(p.code).strip()
+                agg_by_code[code_key] = agg_by_code.get(code_key, 0) + qty
+                prod_by_code.setdefault(code_key, p)
             if p.name:
                 key = p.name.strip().lower()
                 agg_by_name[key] = agg_by_name.get(key, 0) + qty
@@ -2940,11 +2946,13 @@ def _build_revision_xlsx(revs):
             # или он не находится — фолбэк на имя товара из колонки C (3). Это нужно
             # для полуфабрикатов и любых других позиций, которые в шаблоне без кода.
             qty = None
+            matched_p = None
             code_cell = ws.cell(row=row, column=2).value
             if code_cell is not None:
                 code_str = str(code_cell).strip()
                 if code_str in agg_by_code:
                     qty = agg_by_code[code_str]
+                    matched_p = prod_by_code.get(code_str)
             if qty is None:
                 name_cell = ws.cell(row=row, column=3).value
                 if name_cell is not None:
@@ -2957,10 +2965,24 @@ def _build_revision_xlsx(revs):
             # Строки, не попавшие в ассортимент, не трогаем — их удалит постобработка.
             if qty is not None:
                 try:
-                    ws.cell(row=row, column=7, value=qty)
+                    ws.cell(row=row, column=7, value=round(qty, 3))
                 except AttributeError:
                     # Объединённая ячейка в этом месте — пропускаем тихо
                     pass
+                # «Осиротевшая» строка шаблона (код есть, а имя/единица пусты):
+                # восстанавливаем их из каталога, иначе строка висит без имени
+                # и ломает выравнивание списка.
+                if matched_p:
+                    if not str(ws.cell(row=row, column=3).value or '').strip():
+                        try:
+                            ws.cell(row=row, column=3, value=matched_p.name)
+                        except AttributeError:
+                            pass
+                    if not str(ws.cell(row=row, column=6).value or '').strip():
+                        try:
+                            ws.cell(row=row, column=6, value=matched_p.unit)
+                        except AttributeError:
+                            pass
 
         # Постобработка бланка:
         #  • убираем строки товаров не из ассортимента локаций ревизии;
@@ -2978,6 +3000,9 @@ def _build_revision_xlsx(revs):
             v = ws.cell(row=row, column=col).value
             return str(v).strip() if v is not None else ''
 
+        def _looks_like_code(s):
+            return bool(s) and s.replace('.', '').replace(',', '').replace(' ', '').isdigit()
+
         def _is_category_row(row):
             b, c, f = _cell_s(row, 2), _cell_s(row, 3), _cell_s(row, 6)
             if not b or c or f:
@@ -2985,10 +3010,20 @@ def _build_revision_xlsx(revs):
             bl = b.lower()
             if bl in ('товар', 'код'):
                 return False
+            # Заголовок категории — это НАЗВАНИЕ группы, а не код товара. Строка с
+            # числовым кодом в колонке B и пустым именем — «осиротевшая» товарная
+            # строка шаблона, а не категория (иначе её ошибочно не удаляли, и
+            # список «съезжал»).
+            if _looks_like_code(b):
+                return False
             return not any(bl.startswith(p) for p in _meta_prefixes)
 
         def _is_product_row(row):
-            return bool(_cell_s(row, 3) and _cell_s(row, 6))
+            # Обычная товарная строка: имя + единица. Плюс «осиротевшая» строка
+            # шаблона — числовой код в колонке B при пустых имени/единице.
+            if _cell_s(row, 3) and _cell_s(row, 6):
+                return True
+            return _looks_like_code(_cell_s(row, 2)) and not _cell_s(row, 3)
 
         def _in_assortment(row):
             return _cell_s(row, 2) in allowed_codes or _cell_s(row, 3).lower() in allowed_names
