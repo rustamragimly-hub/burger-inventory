@@ -41,6 +41,35 @@ def session(app):
 
 
 @pytest.fixture()
+def client(app):
+    """HTTP-клиент приложения для рендер- и маршрут-тестов."""
+    return flask_app.test_client()
+
+
+@pytest.fixture()
+def login(client):
+    """Логинит пользователя компании через сессию (без брутфорс-логики /login).
+    Сессия flask-login хранит _user_id вида 'u:<id>' (см. AuthUser.get_id)."""
+    def _login(user):
+        with client.session_transaction() as sess:
+            sess['_user_id'] = f'u:{user.id}'
+            sess['_fresh'] = True
+    return _login
+
+
+@pytest.fixture()
+def admin_factory(session):
+    """Фабрика: админ-пользователь для компании."""
+    def _make(org, username='adm', role='admin'):
+        u = models.User(org_id=org.id, username=username, role=role)
+        u.set_password('secret123')
+        db.session.add(u)
+        db.session.commit()
+        return u
+    return _make
+
+
+@pytest.fixture()
 def org_factory(session):
     """Фабрика: создаёт компанию с локациями и товарами."""
     def _make(name='ООО Тест', products=None, locations=('Склад', 'Кухня')):
